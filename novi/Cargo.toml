@@ -1,0 +1,10 @@
+[package]
+name = "novi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dotenvy = "0.15.7"
+novi-core = { path = "../novi-core" }
+serde_yaml = "0.9.32"
+tokio = { version = "1.36.0", features = ["rt-multi-thread"] }

@@ -1,0 +1,11 @@
+/target
+/Cargo.toml
+/.vscode
+
+/config.yml
+/novi-web
+/plugins
+/log
+/models
+/storage
+/.env

@@ -1,4 +1,7 @@
-use crate::{query::QueryBuilder, Error, Filter, Model, Object, Result, TagValue};
+use crate::{
+    anyhow, misc::wrap_nom_from_str, query::QueryBuilder, Error, ErrorKind, Filter, Model, Object,
+    Result, TagValue,
+};
 use chrono::{DateTime, Utc};
 use std::{
     collections::BTreeMap,
@@ -9,13 +12,13 @@ use uuid::Uuid;
 
 mod parse {
     use super::{Consequence, Consequences, Rule};
-    use crate::{filter::parse::filter, Error, Filter, FilterKind};
+    use crate::{anyhow, filter::parse::filter, Filter, FilterKind};
     use nom::{
         bytes::complete::tag, character::complete::multispace0, combinator::map, sequence::tuple,
         IResult,
     };
 
-    type Result<'a, R> = IResult<&'a str, R>;
+    pub type Result<'a, R> = IResult<&'a str, R>;
 
     pub fn consequences(i: &str) -> Result<crate::Result<Consequences>> {
         map(filter, |f| {
@@ -45,9 +48,7 @@ mod parse {
                     .collect::<Option<Vec<_>>>()
                     .map(Consequences)
             })(f);
-            ops.ok_or_else(|| {
-                Error::InvalidRule(i.to_owned(), "invalid implication consequence".to_owned())
-            })
+            ops.ok_or_else(|| anyhow!(@InvalidRule "invalid implication consequence"))
         })(i)
     }
 
@@ -79,17 +80,8 @@ pub struct Consequences(Vec<(String, Consequence)>);
 impl FromStr for Consequences {
     type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self> {
-        let (rem, cons) = parse::consequences(s.trim())
-            .map_err(|e| Error::InvalidRule(s.to_owned(), format!("unknown error: {e}")))?;
-        if !rem.is_empty() {
-            return Err(Error::InvalidRule(
-                s.to_owned(),
-                format!("unexpected trailing characters: {rem:?}"),
-            ));
-        }
-
-        cons
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        wrap_nom_from_str(parse::consequences(s.trim()), ErrorKind::InvalidRule).and_then(|it| it)
     }
 }
 impl Display for Consequences {
@@ -129,7 +121,7 @@ impl TryFrom<Object> for Rule {
         }
 
         let id = value.id();
-        inner(value).ok_or_else(|| Error::InvalidObject(id))
+        inner(value).ok_or_else(|| anyhow!(@InvalidObject "object {id} is not a rule"))
     }
 }
 
@@ -149,16 +141,7 @@ impl FromStr for Rule {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (rem, rule) = parse::rule(s.trim())
-            .map_err(|e| Error::InvalidRule(s.to_owned(), format!("unknown error: {e}")))?;
-        if !rem.is_empty() {
-            return Err(Error::InvalidRule(
-                s.to_owned(),
-                format!("unexpected trailing characters: {rem:?}"),
-            ));
-        }
-
-        rule
+        wrap_nom_from_str(parse::rule(s.trim()), ErrorKind::InvalidRule).and_then(|it| it)
     }
 }
 

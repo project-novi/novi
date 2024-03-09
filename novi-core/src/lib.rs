@@ -5,6 +5,7 @@ mod filter;
 mod image;
 mod lock;
 pub mod log;
+mod misc;
 mod model;
 mod object;
 mod plugin;
@@ -19,17 +20,18 @@ mod vector;
 
 pub use client::{EventKind, RpcProvider, Subscriber};
 pub use config::NoviConfig;
-pub use error::{Error, Result};
+use error::ResultExt;
+pub use error::{Error, ErrorKind, Result};
 pub use filter::{Filter, FilterKind, TimeRange};
 pub use image::InferredTag;
 pub use lock::{KeyMutex, KeyRwLock};
 pub use model::Model;
 pub use object::{Object, ObjectMeta};
-use once_cell::sync::Lazy;
-use plugin::{PluginInfo, PluginState};
 pub use rpc::sub_main;
 pub use tag::TagValue;
 pub use user::{AccessKind, User};
+
+pub(crate) use error::{anyhow, bail};
 
 use ::image::DynamicImage;
 use argon2::{
@@ -42,6 +44,8 @@ use image::ImageModel;
 use interprocess::local_socket::tokio as ipc;
 use lock::OwnedMutexGuard;
 use moka::future::Cache;
+use once_cell::sync::Lazy;
+use plugin::{PluginInfo, PluginState};
 use rule::{parse_rules, query_unsatisfied, Rule, RuleSet};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -87,7 +91,7 @@ task_local! {
 
 fn check_action_precondition(object: &Object) -> Result<()> {
     if IF_UNMODIFIED_SINCE.try_with(|it| *it < object.meta().updated) == Ok(true) {
-        return Err(Error::PreconditionFailed);
+        bail!(@PreconditionFailed);
     }
 
     Ok(())
@@ -161,7 +165,7 @@ impl FromStr for Order {
         let created = match field {
             "created" => true,
             "updated" => false,
-            _ => return Err(Error::InvalidOrder(s.to_owned())),
+            _ => bail!(@InvalidOrder),
         };
 
         Ok(Self { created, asc })
@@ -198,7 +202,7 @@ impl Novi {
         let db = PgPoolOptions::new()
             .connect_with(opt.disable_statement_logging())
             .await?;
-        MIGRATOR.run(&db).await?;
+        MIGRATOR.run(&db).await.wrap()?;
 
         let (novi_tx, novi_rx) = oneshot::channel::<Arc<Novi>>();
 
@@ -368,6 +372,10 @@ impl Novi {
         Ok(res)
     }
 
+    fn object_not_found(id: Uuid) -> Error {
+        anyhow!(@ObjectNotFound "object {id} not found")
+    }
+
     fn load_plugin(name: impl AsRef<Path>) -> Result<Option<PluginState>> {
         let name = name.as_ref();
         let path = Path::new("plugins").join(name);
@@ -378,12 +386,7 @@ impl Novi {
         if !info_file.exists() {
             return Ok(None);
         }
-        let info: PluginInfo = match serde_yaml::from_reader(std::fs::File::open(info_file)?) {
-            Ok(it) => it,
-            Err(err) => {
-                return Err(Error::unknown(err));
-            }
-        };
+        let info: PluginInfo = serde_yaml::from_reader(std::fs::File::open(info_file)?).wrap()?;
         info!(name = info.name, "loading plugin");
         let process = std::process::Command::new(std::env::current_exe()?)
             .arg("--plugin-host")
@@ -403,7 +406,7 @@ impl Novi {
         let row = Object::query_id(id)
             .fetch_optional(&self.db)
             .await?
-            .ok_or_else(|| Error::ObjectNotFound(id));
+            .ok_or_else(|| Self::object_not_found(id));
         row.and_then(Object::from_row)
     }
 
@@ -451,7 +454,7 @@ impl Novi {
             .fetch_optional(tr.as_mut())
             .await?;
         let Some(updated) = updated else {
-            return Err(Error::ObjectNotFound(id));
+            return Err(Self::object_not_found(id));
         };
         if updated == since {
             return Ok(None);
@@ -460,7 +463,7 @@ impl Novi {
         let row = Object::query_id(id)
             .fetch_optional(tr.as_mut())
             .await?
-            .ok_or_else(|| Error::ObjectNotFound(id));
+            .ok_or_else(|| Self::object_not_found(id));
         row.and_then(Object::from_row).map(Some)
     }
 
@@ -482,16 +485,16 @@ impl Novi {
 
 fn validate_tag(tag: &str) -> Result<()> {
     if tag.is_empty() {
-        return Err(Error::InvalidTag(tag.to_owned(), "empty tag"));
+        bail!(@InvalidTag "empty tag");
     }
     if tag.len() > 100 {
-        return Err(Error::InvalidTag(tag.to_owned(), "tag too long"));
+        bail!(@InvalidTag "tag too long");
     }
 
     let body = match tag.chars().next() {
         Some('#') => {
             if tag.len() == 1 {
-                return Err(Error::InvalidTag(tag.to_owned(), "empty tag"));
+                bail!(@InvalidTag "empty tag");
             }
             &tag[1..]
         }
@@ -499,10 +502,7 @@ fn validate_tag(tag: &str) -> Result<()> {
         _ => tag,
     };
     if !body.chars().all(valid_tag_char) {
-        return Err(Error::InvalidTag(
-            tag.to_owned(),
-            "tag contains invalid characters",
-        ));
+        bail!(@InvalidTag "tag contains invalid characters");
     }
 
     Ok(())
@@ -521,7 +521,7 @@ impl Novi {
                 if let Some(name) = tag.strip_prefix('@') {
                     if !can_modify_internal && !user::has_perm(&format!("novi.itag.modify:{name}"))
                     {
-                        return Err(Error::CantEditTag(tag.to_owned()));
+                        bail!(@PermissionDenied "can't modify tag {tag:?}");
                     }
                 }
             }
@@ -541,7 +541,7 @@ impl Novi {
             for (tag, _) in object.tags.range(s.clone()..=(s.clone() + "\u{ff}")) {
                 let perm = tag.strip_prefix(&s).unwrap();
                 if !user::has_perm(perm) {
-                    return Err(Error::AccessDenied(object.id(), kind));
+                    bail!(@AccessDenied "access {kind:?} to object {}", object.id);
                 }
             }
 
@@ -580,7 +580,7 @@ impl Novi {
                 time,
                 deleted_tags,
             })
-            .map_err(|_| Error::ChannelError)?;
+            .wrap()?;
 
         Ok(object)
     }
@@ -825,7 +825,7 @@ impl Novi {
         Ok(obj
             .tags
             .remove(tag)
-            .ok_or_else(|| Error::NoSuchTag(id, tag.to_owned()))?
+            .ok_or_else(|| anyhow!(@TagNotFound "tag {tag:?} not found in object {id}"))?
             .value)
     }
 
@@ -861,7 +861,8 @@ impl Novi {
     ) -> Result<Uuid> {
         let id = Uuid::new_v4();
         info!(%id, "new subscriber");
-        if let Some(ckpt) = Some(checkpoint).or_else(|| if with_history { Some(None) } else { None })
+        if let Some(ckpt) =
+            Some(checkpoint).or_else(|| if with_history { Some(None) } else { None })
         {
             let mut objects = self
                 .query(
@@ -889,7 +890,7 @@ impl Novi {
                     time: checkpoint.unwrap_or_else(Utc::now),
                 },
             })
-            .map_err(|_| Error::ChannelError)?;
+            .wrap()?;
         Ok(id)
     }
 
@@ -897,7 +898,7 @@ impl Novi {
         info!(%id, "unsubscribe");
         self.worker_tx
             .send(WorkerMessage::RemoveSub { id })
-            .map_err(|_| Error::ChannelError)?;
+            .wrap()?;
         Ok(())
     }
 }
@@ -965,7 +966,7 @@ impl Novi {
         let mut rule_set = self.rule_set.write().await;
 
         if !rule_set.delete_rule(id) {
-            return Err(Error::ObjectNotFound(id));
+            return Err(Self::object_not_found(id));
         }
         internal_scope(self.delete_object(id)).await?;
 
@@ -1019,7 +1020,7 @@ impl Novi {
         )
         .fetch_optional(&self.db)
         .await?
-        .ok_or(Error::InvalidCredentials)?;
+        .ok_or_else(|| anyhow!(@InvalidCredentials))?;
         let user = self.get_user(id).await;
         user.verify(password)?;
 
@@ -1033,25 +1034,22 @@ impl Novi {
 
     pub async fn register(&self, name: &str, password: &str) -> Result<Uuid> {
         if !(4..=20).contains(&name.chars().count()) {
-            return Err(Error::InvalidUsername(
-                name.to_owned(),
-                "username length must be between 4 and 20",
-            ));
+            bail!(@InvalidInput "username length must be between 4 and 20");
         }
         if !name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
-            return Err(Error::InvalidUsername(
-                name.to_owned(),
-                "username must only contain alphanumeric characters, '-' and '_'",
-            ));
+            bail!(
+                @InvalidInput
+                "username must only contain alphanumeric characters, '-' and '_"
+            );
         }
         if !(6..=30).contains(&password.len()) {
-            return Err(Error::InvalidPassword(
-                password.to_owned(),
-                "password length must be between 6 and 30",
-            ));
+            bail!(
+                @InvalidInput
+                "password length must be between 6 and 30"
+            );
         }
 
         let salt = SaltString::generate(&mut OsRng);
@@ -1069,7 +1067,7 @@ impl Novi {
         .await?
         .is_some()
         {
-            return Err(Error::UsernameOccupied(name.to_owned()));
+            bail!(@UsernameOccupied);
         }
 
         let object = internal_scope(self.add_model(&User::new(name.to_owned(), password))).await?;
@@ -1102,7 +1100,7 @@ impl Novi {
     async fn get_tag_or_insert_inner(&self, tag: &str, fail_if_exists: bool) -> Result<Arc<Tag>> {
         if let Some(tag) = self.get_tag(tag).await {
             if fail_if_exists {
-                return Err(Error::TagAlreadyExists(tag.name.clone()));
+                bail!(@TagExists);
             }
             return Ok(tag);
         }
@@ -1110,7 +1108,7 @@ impl Novi {
         let mut tags = self.tags.write().await;
         if let Some(tag) = tags.get(tag) {
             if fail_if_exists {
-                return Err(Error::TagAlreadyExists(tag.name.clone()));
+                bail!(@TagExists);
             }
             return Ok(Arc::clone(tag));
         }
@@ -1164,10 +1162,15 @@ impl Novi {
 }
 
 impl Novi {
-    pub async fn call(&self, name: &str, args: RpcArgs, timeout: Option<Duration>) -> Result<serde_json::Value> {
+    pub async fn call(
+        &self,
+        name: &str,
+        args: RpcArgs,
+        timeout: Option<Duration>,
+    ) -> Result<serde_json::Value> {
         debug!(name, ?args, ?timeout, "rpc");
         let Some(provider) = self.rpc_providers.get(name) else {
-            return Err(Error::RpcNotFound(name.to_owned()));
+            bail!(@RpcNotFound "rpc {name:?} not found");
         };
         let future = (provider.1)(name, args);
 
@@ -1175,7 +1178,7 @@ impl Novi {
             tokio::time::timeout(timeout, future)
                 .await
                 .ok()
-                .ok_or(Error::RpcTimeout)??
+                .ok_or_else(|| anyhow!(@RpcTimeout))??
         } else {
             future.await?
         };
@@ -1193,7 +1196,7 @@ impl Novi {
             vacant.insert((user::id(), provider));
             Ok(())
         } else {
-            Err(Error::RpcAlreadyRegistered(name.to_owned()))
+            bail!(@RpcConflict "rpc {name:?} already registered");
         }
     }
 
@@ -1205,7 +1208,7 @@ impl Novi {
             .remove_if(name, |_, rpc| rpc.0 == user::id())
             .is_none()
         {
-            return Err(Error::PermissionDenied(None));
+            bail!(@PermissionDenied "only registrant can unregister rpc");
         }
 
         Ok(())
@@ -1218,7 +1221,7 @@ impl Novi {
         self.check_object(&object, AccessKind::View).await?;
 
         if object.get("@") != Some("image") || !object.tags.contains_key("@cached") {
-            return Err(Error::InvalidObject(id));
+            bail!(@InvalidObject "object {id} is not a cached image");
         }
 
         let _guard = self.predict_lock.lock(id).await;
@@ -1333,7 +1336,7 @@ impl Novi {
     pub async fn render_markdown(&self, id: Uuid) -> Result<RenderedMarkdown> {
         let obj = self.get_object(id).await?;
         if obj.get("@") != Some("text") {
-            return Err(Error::InvalidObject(id));
+            bail!(@InvalidObject "object {id} is not a text object");
         }
 
         let content = std::fs::read_to_string(format!("storage/{id}"))?;

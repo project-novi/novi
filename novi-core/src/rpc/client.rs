@@ -1,5 +1,5 @@
 use super::{Close, Execute, FlattenedObject, IpcSocket, PlainError};
-use crate::{py::ObjectImpl, Error};
+use crate::{py::ObjectImpl, ErrorKind};
 use async_trait::async_trait;
 use pyo3::{exceptions::PyException, prelude::*};
 use serde::{Deserialize, Serialize};
@@ -9,8 +9,8 @@ impl From<&PyErr> for PlainError {
     fn from(e: &PyErr) -> Self {
         let message = Command::format_error(e);
         PlainError {
+            kind: ErrorKind::PyError,
             message,
-            code: Error::PythonError(String::new()).error_code(),
         }
     }
 }

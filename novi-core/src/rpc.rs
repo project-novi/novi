@@ -1,7 +1,7 @@
 pub mod client;
 pub mod server;
 
-use crate::{user::internal_scope, Result, TagValue};
+use crate::{user::internal_scope, ErrorKind, Result, TagValue};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::io::{AsyncReadExt, AsyncWriteExt};
@@ -141,25 +141,25 @@ impl From<Arc<crate::Object>> for FlattenedObject {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct PlainError {
-    code: u16,
+    kind: ErrorKind,
     message: String,
 }
 impl Display for PlainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "error#{}: {}", self.code, self.message)
+        write!(f, "Error {:?}: {}", self.kind, self.message)
     }
 }
 impl From<&crate::Error> for PlainError {
     fn from(err: &crate::Error) -> Self {
         Self {
-            code: err.error_code(),
+            kind: err.kind(),
             message: err.to_string(),
         }
     }
 }
 impl From<PlainError> for crate::Error {
     fn from(err: PlainError) -> Self {
-        Self::Plain(err.code, err.message)
+        crate::Error::msg(err.message).with_kind(err.kind)
     }
 }
 

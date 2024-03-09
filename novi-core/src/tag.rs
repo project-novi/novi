@@ -1,4 +1,4 @@
-use crate::{Error, Model, Object, Result};
+use crate::{anyhow, Error, Model, Object, Result};
 use chrono::{DateTime, Utc};
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -99,6 +99,6 @@ impl TryFrom<Object> for Tag {
         }
 
         let id = value.id;
-        inner(value).ok_or_else(|| Error::InvalidObject(id))
+        inner(value).ok_or_else(|| anyhow!(@InvalidObject "object {id} is not a tag"))
     }
 }

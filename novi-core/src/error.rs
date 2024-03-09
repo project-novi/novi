@@ -1,103 +1,218 @@
-use crate::AccessKind;
-use thiserror::Error;
-use uuid::Uuid;
+use serde::{Deserialize, Serialize};
+use std::{fmt, io};
 
-#[derive(Error, Debug)]
-#[repr(u16)]
-pub enum Error {
-    #[error("unknown error: {0}")]
-    Unknown(Box<dyn std::error::Error + Send + Sync>),
+macro_rules! anyhow {
+    ($fmt:literal $($args:tt)*) => {
+        $crate::anyhow!(@Unspecified $fmt $($args)*)
+    };
+    (@$kind:ident $fmt:literal $($args:tt)*) => {
+        $crate::Error::new($crate::ErrorKind::$kind, Some(anyhow::anyhow!($fmt $($args)*)))
+    };
+    (@$kind:ident) => {
+        $crate::Error::new($crate::ErrorKind::$kind, None)
+    };
+}
+pub(crate) use anyhow;
 
-    #[error("error#{0}: {1}")]
-    Plain(u16, String),
+macro_rules! bail {
+    ($($t:tt)*) => {
+        return Err($crate::anyhow!($($t)*))
+    };
+}
+pub(crate) use bail;
 
-    #[error("failed to run migrations: {0}")]
-    MigrateError(#[from] sqlx::migrate::MigrateError),
-    #[error("internal database error: {0}")]
-    DatabaseError(Box<sqlx::Error>),
-    #[error("channel error")]
-    ChannelError,
-    #[error("io error: {0}")]
-    IOError(#[from] std::io::Error),
-
-    #[error("invalid credentials")]
-    InvalidCredentials,
-
-    #[error("invalid tag: {0:?}, cause: {1}")]
-    InvalidTag(String, &'static str),
-    #[error("invalid username: {0:?}, cause: {1}")]
-    InvalidUsername(String, &'static str),
-    #[error("invalid password: {0:?}, cause: {1}")]
-    InvalidPassword(String, &'static str),
-
-    #[error("username occupied: {0}")]
-    UsernameOccupied(String),
-
-    #[error("object not found: {0}")]
-    ObjectNotFound(Uuid),
-    #[error("no such tag ({1:?}) in object {0}")]
-    NoSuchTag(Uuid, String),
-
-    #[error("access denied for {1}: {0}")]
-    AccessDenied(Uuid, AccessKind),
-    #[error("permission denied: {0:?}")]
-    PermissionDenied(Option<String>),
-
-    #[error("invalid rule: {0:?}, cause: {1}")]
-    InvalidRule(String, String),
-    #[error("invalid object: {0}")]
-    InvalidObject(Uuid),
-
-    #[error("alias of {0} already exists: {1}")]
-    AliasAlreadyExists(String, String),
-    #[error("tag already exists: {0}")]
-    TagAlreadyExists(String),
-
-    #[error("invalid parameters")]
-    InvalidParameters,
-
-    #[error("can't edit tag: {0}")]
-    CantEditTag(String),
-
-    #[error("RPC timed out")]
-    RpcTimeout,
-    #[error("RPC not found: {0}")]
-    RpcNotFound(String),
-    #[error("RPC already registered: {0}")]
-    RpcAlreadyRegistered(String),
-
-    #[error("invalid image")]
-    InvalidImage,
-    #[error("file not found")]
-    FileNotFound,
-
-    #[error("invalid order: {0}")]
-    InvalidOrder(String),
-
-    #[error("candle error: {0}")]
-    OrtError(#[from] ort::Error),
-
-    #[error("precondition failed")]
-    PreconditionFailed,
-
-    #[error("python error: {0}")]
-    PythonError(String),
+#[derive(Debug)]
+pub struct Error {
+    kind: ErrorKind,
+    source: Option<anyhow::Error>,
 }
 
-impl From<sqlx::Error> for Error {
-    fn from(e: sqlx::Error) -> Self {
-        Self::DatabaseError(Box::new(e))
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.kind)?;
+        if let Some(source) = &self.source {
+            write!(f, ": {source}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_ref().map(|v| v.as_ref())
     }
 }
 
 impl Error {
-    pub fn unknown(e: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::Unknown(Box::new(e))
+    pub fn new(kind: ErrorKind, source: Option<anyhow::Error>) -> Self {
+        Self { kind, source }
     }
 
-    pub fn error_code(&self) -> u16 {
-        100 + unsafe { *(self as *const _ as *const u16) }
+    pub fn anyhow(source: anyhow::Error) -> Self {
+        Self::new(ErrorKind::Unspecified, Some(source))
+    }
+
+    pub fn msg<C>(msg: C) -> Self
+    where
+        C: fmt::Display + fmt::Debug + Send + Sync + 'static,
+    {
+        Self::anyhow(anyhow::Error::msg(msg))
+    }
+
+    pub fn context<C>(mut self, context: C) -> Self
+    where
+        C: fmt::Display + fmt::Debug + Send + Sync + 'static,
+    {
+        self.source = Some(match self.source {
+            Some(err) => err.context(context),
+            None => anyhow::Error::msg(context),
+        });
+        self
+    }
+
+    pub fn with_kind(mut self, kind: ErrorKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+}
+
+pub trait ErrorExt {
+    fn wrap(self) -> Error;
+}
+impl<E> ErrorExt for E
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    fn wrap(self) -> Error {
+        Error::anyhow(self.into())
+    }
+}
+pub trait ResultExt<T> {
+    fn wrap(self) -> Result<T>;
+}
+impl<T, E> ResultExt<T> for Result<T, E>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    fn wrap(self) -> Result<T> {
+        self.map_err(|err| err.wrap())
     }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+pub trait Context<T> {
+    fn kind(self, kind: ErrorKind) -> Result<T>;
+
+    fn context<C>(self, context: C) -> Result<T>
+    where
+        C: fmt::Display + fmt::Debug + Send + Sync + 'static;
+
+    fn with_context<C, F>(self, f: F) -> Result<T>
+    where
+        C: fmt::Display + fmt::Debug + Send + Sync + 'static,
+        F: FnOnce() -> C;
+}
+
+impl<T, E> Context<T> for Result<T, E>
+where
+    E: ErrorExt,
+{
+    fn kind(self, kind: ErrorKind) -> Result<T> {
+        match self {
+            Ok(ok) => Ok(ok),
+            Err(error) => Err(error.wrap().with_kind(kind)),
+        }
+    }
+
+    fn context<C>(self, context: C) -> Result<T>
+    where
+        C: fmt::Display + fmt::Debug + Send + Sync + 'static,
+    {
+        match self {
+            Ok(ok) => Ok(ok),
+            Err(error) => Err(error.wrap().context(context)),
+        }
+    }
+
+    fn with_context<C, F>(self, context: F) -> Result<T, Error>
+    where
+        C: fmt::Display + fmt::Debug + Send + Sync + 'static,
+        F: FnOnce() -> C,
+    {
+        match self {
+            Ok(ok) => Ok(ok),
+            Err(error) => Err(error.wrap().context(context())),
+        }
+    }
+}
+
+impl<T> Context<T> for Option<T> {
+    fn kind(self, kind: ErrorKind) -> Result<T> {
+        self.ok_or_else(|| Error::new(kind, None))
+    }
+
+    fn context<C>(self, context: C) -> Result<T>
+    where
+        C: fmt::Display + fmt::Debug + Send + Sync + 'static,
+    {
+        self.ok_or_else(|| Error::msg(context))
+    }
+
+    fn with_context<C, F>(self, context: F) -> Result<T, Error>
+    where
+        C: fmt::Display + fmt::Debug + Send + Sync + 'static,
+        F: FnOnce() -> C,
+    {
+        self.ok_or_else(|| Error::msg(context()))
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+pub enum ErrorKind {
+    #[default]
+    Unspecified,
+
+    DBError,
+    IOError,
+    PyError,
+
+    ObjectNotFound,
+    RpcNotFound,
+    TagNotFound,
+
+    AccessDenied,
+    PermissionDenied,
+
+    InvalidCredentials,
+    InvalidFilter,
+    InvalidInput,
+    InvalidRule,
+    InvalidObject,
+    InvalidOrder,
+    InvalidTag,
+
+    UsernameOccupied,
+
+    PreconditionFailed,
+    TagExists,
+
+    RpcConflict,
+    RpcTimeout,
+}
+
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Self {
+        Error::new(ErrorKind::IOError, Some(err.into()))
+    }
+}
+
+impl From<sqlx::Error> for Error {
+    fn from(err: sqlx::Error) -> Self {
+        Error::new(ErrorKind::DBError, Some(err.into()))
+    }
+}

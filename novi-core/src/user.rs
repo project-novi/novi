@@ -1,4 +1,4 @@
-use crate::{Error, Model, Object, Result};
+use crate::{anyhow, bail, Error, Model, Object, Result};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use once_cell::sync::Lazy;
 use std::{
@@ -133,7 +133,7 @@ impl User {
             )
             .is_err()
         {
-            Err(Error::InvalidCredentials)
+            bail!(@InvalidCredentials "password incorrect")
         } else {
             Ok(())
         }
@@ -203,7 +203,7 @@ impl TryFrom<Object> for User {
         }
 
         let id = value.id;
-        inner(value).ok_or_else(|| Error::InvalidObject(id))
+        inner(value).ok_or_else(|| anyhow!(@InvalidObject "object {id} is not a user"))
     }
 }
 
@@ -256,7 +256,7 @@ pub fn has_perm(mut perm: &str) -> bool {
 
 pub fn check_perm(perm: &str) -> Result<()> {
     if !has_perm(perm) {
-        return Err(Error::PermissionDenied(Some(perm.to_owned())));
+        bail!(@PermissionDenied "missing permission {perm}");
     }
     Ok(())
 }

@@ -1,7 +1,5 @@
 use crate::{
-    query::{pg_pattern_escape, QueryBuilder},
-    user::USER,
-    Error, Object, Order, Result, TagValue,
+    misc::wrap_nom_from_str, query::{pg_pattern_escape, QueryBuilder}, user::USER, Error, ErrorKind, Object, Order, Result, TagValue
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -210,15 +208,7 @@ impl FromStr for Filter {
         if s.is_empty() {
             return Ok(Filter::all());
         }
-        let (rem, filter) = parse::filter(s)
-            .map_err(|e| Error::InvalidRule(s.to_owned(), format!("unknown error: {e}")))?;
-        if !rem.is_empty() {
-            return Err(Error::InvalidRule(
-                s.to_owned(),
-                format!("unexpected trailing characters: {rem:?}"),
-            ));
-        }
-        Ok(filter)
+        wrap_nom_from_str(parse::filter(s), ErrorKind::InvalidFilter)
     }
 }
 

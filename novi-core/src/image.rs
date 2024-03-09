@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{error::ResultExt, Result};
 use image::DynamicImage;
 use ndarray::{Array1, Array2, Array3, Axis};
 use ort::{CPUExecutionProvider, GraphOptimizationLevel, Session};
@@ -253,7 +253,7 @@ impl ImageModel {
     }
 
     pub fn embedding(&self, image: DynamicImage) -> Result<Vec<f32>> {
-        let embedding = self.image2vec.embedding(image)?;
+        let embedding = self.image2vec.embedding(image).wrap()?;
 
         Ok(embedding.into_iter().collect())
     }

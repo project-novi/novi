@@ -1,5 +1,8 @@
 use crate::{
-    misc::wrap_nom_from_str, query::{pg_pattern_escape, QueryBuilder}, user::USER, Error, ErrorKind, Object, Order, Result, TagValue
+    misc::wrap_nom_from_str,
+    query::{pg_pattern_escape, QueryBuilder},
+    user::USER,
+    Error, ErrorKind, Object, Order, Result, TagValue,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -389,6 +392,7 @@ pub(crate) mod parse {
     }
 }
 
+// TODO more general implementation
 pub type TimeRange = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 impl Filter {

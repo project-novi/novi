@@ -359,4 +359,4 @@ def move(src: Union[Path, str], dst: Union[Path, str], /):
         src.unlink()
 
 
-__all__ = ['Client', 'Object', 'TagValue', 'move']
+__all__ = ['Client', 'Object', 'TagValue', 'Tags', 'move']

@@ -1,9 +1,12 @@
+// TODO async version
+
 use crate::{
     log::LOGGER,
     rpc::{client, server::Command, FlattenedObject, IpcSocket},
     Object, ObjectMeta, TagValue, Tags, ROOT_PATH,
 };
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use pyo3::{
     exceptions::{PyKeyError, PyValueError},
     prelude::*,
@@ -72,11 +75,23 @@ impl FromPyObject<'_> for PyUuid {
 }
 
 #[pyclass]
-struct ClientImpl(Arc<IpcSocket<client::Command>>);
+struct ClientImpl {
+    socket: Arc<IpcSocket<client::Command>>,
+    subscribe_callbacks: DashMap<Uuid, PyObject>,
+    rpc_callbacks: DashMap<String, PyObject>,
+}
 impl ClientImpl {
+    fn new(socket: Arc<IpcSocket<client::Command>>) -> Self {
+        Self {
+            socket,
+            subscribe_callbacks: DashMap::new(),
+            rpc_callbacks: DashMap::new(),
+        }
+    }
+
     fn invoke<T: Send + DeserializeOwned>(&self, cmd: Command) -> PyResult<T> {
         let py = unsafe { Python::assume_gil_acquired() };
-        let socket = self.0.clone();
+        let socket = self.socket.clone();
         py.allow_threads(move || {
             tokio::task::block_in_place(|| {
                 Handle::current().block_on(async { socket.invoke(cmd).await })
@@ -145,21 +160,23 @@ impl ClientImpl {
         with_history: bool,
         exclude_unrelated: bool,
     ) -> PyResult<String> {
-        let ptr = callback.as_ptr();
-        // TODO fix leak
-        std::mem::forget(callback);
         self.invoke::<Uuid>(Command::Subscribe {
             filter: filter.to_owned(),
-            callback: ptr as _,
+            callback: callback.as_ptr() as _,
             checkpoint,
             with_history,
             exclude_unrelated,
         })
-        .map(|it| it.to_string())
+        .map(|it| {
+            self.subscribe_callbacks.insert(it, callback);
+            it.to_string()
+        })
     }
 
     fn unsubscribe(&self, id: PyUuid) -> PyResult<()> {
-        self.invoke(Command::Unsubscribe(id.0))
+        self.invoke::<()>(Command::Unsubscribe(id.0)).map(|_| {
+            self.subscribe_callbacks.remove(&id.0);
+        })
     }
 
     fn call<'py>(
@@ -181,17 +198,20 @@ impl ClientImpl {
     }
 
     fn register_rpc(&self, name: String, callback: PyObject) -> PyResult<()> {
-        let ptr = callback.as_ptr();
-        // TODO fix leak
-        std::mem::forget(callback);
-        self.invoke(Command::RegisterRpc {
-            name,
-            callback: ptr as _,
+        self.invoke::<()>(Command::RegisterRpc {
+            name: name.clone(),
+            callback: callback.as_ptr() as _,
+        })
+        .map(|_| {
+            self.rpc_callbacks.insert(name, callback);
         })
     }
 
     fn unregister_rpc(&self, name: String) -> PyResult<()> {
-        self.invoke(Command::UnregisterRpc(name))
+        self.invoke::<()>(Command::UnregisterRpc(name.clone()))
+            .map(|_| {
+                self.rpc_callbacks.remove(&name);
+            })
     }
 
     fn root_path(&self) -> PyResult<&str> {
@@ -246,7 +266,7 @@ pub fn init(
     socket: Arc<IpcSocket<client::Command>>,
 ) -> PyResult<()> {
     let builtins = py.import("builtins")?;
-    builtins.setattr("_impl", ClientImpl(socket).into_py(py))?;
+    builtins.setattr("_impl", ClientImpl::new(socket).into_py(py))?;
 
     let m = PyModule::from_code(
         py,

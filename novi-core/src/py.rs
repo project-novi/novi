@@ -62,6 +62,24 @@ impl ObjectImpl {
             .cloned()
             .ok_or_else(|| PyKeyError::new_err("tag not found"))
     }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> &'py PyDict {
+        [
+            ("tags", self.0.tags.clone().into_py(py)),
+            ("id", self.0.id.to_string().into_py(py)),
+            (
+                "creator",
+                self.0.meta.creator.map(|it| it.to_string()).into_py(py),
+            ),
+            ("created", self.0.meta.created.into_py(py)),
+            ("updated", self.0.meta.updated.into_py(py)),
+        ]
+        .into_py_dict(py)
+    }
+
+    fn to_json(&self) -> String {
+        serde_json::to_string(&self.0).unwrap()
+    }
 }
 
 struct PyUuid(Uuid);

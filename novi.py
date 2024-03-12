@@ -279,6 +279,12 @@ class Object:
     def tags(self) -> Dict[str, TagValue]:
         return self.impl.tags()
 
+    def to_dict(self) -> Dict[str, Any]:
+        return self.impl.to_dict()
+
+    def to_json(self) -> str:
+        return self.impl.to_json()
+
     def keys(self):
         return self.tags.keys()
 

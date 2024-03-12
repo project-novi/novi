@@ -72,7 +72,7 @@ class Client:
 
     def query(
         self,
-        filter: str,
+        filter: str = '',
         *,
         checkpoint: Optional[datetime] = None,
         updated_after: Optional[datetime] = None,

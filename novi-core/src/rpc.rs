@@ -332,7 +332,9 @@ where
                             // u32::from_le_bytes(bytes)
                             // );
                         }
-                        state.sender.as_ref().unwrap().send(msg).await.unwrap();
+                        if state.sender.as_ref().unwrap().send(msg).await.is_err() {
+                            warn!(name = this.name, "channel closed");
+                        }
                     }
                 }
             }

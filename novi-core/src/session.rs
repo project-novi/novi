@@ -30,9 +30,9 @@ task_local! {
     static SESSION: Arc<Session>;
 }
 
-static GUEST_SESSION: Lazy<Arc<Session>> =
+pub static GUEST_SESSION: Lazy<Arc<Session>> =
     Lazy::new(|| Session::new(user::GUEST_USER.clone()));
-static INTERNAL_SESSION: Lazy<Arc<Session>> =
+pub static INTERNAL_SESSION: Lazy<Arc<Session>> =
     Lazy::new(|| Session::new(user::INTERNAL_USER.clone()));
 
 pub fn get() -> Arc<Session> {

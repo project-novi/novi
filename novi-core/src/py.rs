@@ -2,7 +2,11 @@
 
 use crate::{
     log::LOGGER,
-    rpc::{client, server::Command, FlattenedObject, IpcSocket},
+    rpc::{
+        client,
+        server::{Command, RawCommand},
+        FlattenedObject, IpcSocket,
+    },
     Object, ObjectMeta, TagValue, Tags, ROOT_PATH,
 };
 use chrono::{DateTime, Utc};
@@ -84,21 +88,20 @@ impl ObjectImpl {
 
 struct PyUuid(Uuid);
 impl FromPyObject<'_> for PyUuid {
-    fn extract(ob: &PyAny) -> PyResult<Self> {
-        let s: String = ob.extract()?;
+    fn extract(obj: &PyAny) -> PyResult<Self> {
+        let s: String = obj.extract()?;
         Uuid::parse_str(&s)
             .map(PyUuid)
             .map_err(|_| PyValueError::new_err("invalid UUID"))
     }
 }
 
-#[pyclass]
-struct ClientImpl {
+struct State {
     socket: Arc<IpcSocket<client::Command>>,
     subscribe_callbacks: DashMap<Uuid, PyObject>,
     rpc_callbacks: DashMap<String, PyObject>,
 }
-impl ClientImpl {
+impl State {
     fn new(socket: Arc<IpcSocket<client::Command>>) -> Self {
         Self {
             socket,
@@ -107,32 +110,76 @@ impl ClientImpl {
         }
     }
 
-    fn invoke<T: Send + DeserializeOwned>(&self, cmd: Command) -> PyResult<T> {
+    fn invoke<T: Send + DeserializeOwned>(
+        &self,
+        session: Option<Uuid>,
+        command: RawCommand,
+    ) -> PyResult<T> {
         let py = unsafe { Python::assume_gil_acquired() };
         let socket = self.socket.clone();
         py.allow_threads(move || {
             tokio::task::block_in_place(|| {
-                Handle::current().block_on(async { socket.invoke(cmd).await })
+                Handle::current()
+                    .block_on(async { socket.invoke(Command { session, command }).await })
             })
         })
+    }
+}
+
+#[pyclass]
+struct Core(Arc<State>);
+#[pymethods]
+impl Core {
+    fn login(&self, name: String, password: String) -> PyResult<ClientImpl> {
+        let session: Uuid = self.0.invoke(None, RawCommand::Login { name, password })?;
+        Ok(ClientImpl {
+            state: self.0.clone(),
+            session: Some(session),
+        })
+    }
+
+    fn guest_client(&self) -> ClientImpl {
+        ClientImpl {
+            state: self.0.clone(),
+            session: None,
+        }
+    }
+
+    fn internal_client(&self) -> ClientImpl {
+        ClientImpl {
+            state: self.0.clone(),
+            session: Some(Uuid::nil()),
+        }
+    }
+}
+
+#[pyclass]
+struct ClientImpl {
+    state: Arc<State>,
+    session: Option<Uuid>,
+}
+impl ClientImpl {
+    #[inline]
+    fn invoke<T: Send + DeserializeOwned>(&self, command: RawCommand) -> PyResult<T> {
+        self.state.invoke(self.session, command)
     }
 }
 #[pymethods]
 impl ClientImpl {
     fn add_object(&self, tags: Tags) -> PyResult<ObjectImpl> {
-        self.invoke(Command::AddObject(tags))
+        self.invoke(RawCommand::AddObject(tags))
             .map(ObjectImpl::from_flattened)
     }
 
     fn get_object(&self, id: &str) -> PyResult<ObjectImpl> {
-        self.invoke(Command::GetObject(
+        self.invoke(RawCommand::GetObject(
             Uuid::parse_str(id).map_err(|_| PyValueError::new_err("invalid UUID"))?,
         ))
         .map(ObjectImpl::from_flattened)
     }
 
     fn set_object_tags(&self, id: PyUuid, tags: Tags, force_update: bool) -> PyResult<ObjectImpl> {
-        self.invoke(Command::SetObjectTags {
+        self.invoke(RawCommand::SetObjectTags {
             id: id.0,
             tags,
             force_update,
@@ -141,7 +188,7 @@ impl ClientImpl {
     }
 
     fn delete_object(&self, id: PyUuid) -> PyResult<()> {
-        self.invoke(Command::DeleteObject(id.0))
+        self.invoke(RawCommand::DeleteObject(id.0))
     }
 
     #[pyo3(signature = (filter, checkpoint, updated_after, updated_before, created_after, created_before, order, limit))]
@@ -156,7 +203,7 @@ impl ClientImpl {
         order: &str,
         limit: Option<u32>,
     ) -> PyResult<Vec<ObjectImpl>> {
-        self.invoke(Command::Query {
+        self.invoke(RawCommand::Query {
             filter: filter.to_owned(),
             checkpoint,
             updated_range: (updated_after, updated_before),
@@ -178,7 +225,7 @@ impl ClientImpl {
         with_history: bool,
         exclude_unrelated: bool,
     ) -> PyResult<String> {
-        self.invoke::<Uuid>(Command::Subscribe {
+        self.invoke::<Uuid>(RawCommand::Subscribe {
             filter: filter.to_owned(),
             callback: callback.as_ptr() as _,
             checkpoint,
@@ -186,14 +233,14 @@ impl ClientImpl {
             exclude_unrelated,
         })
         .map(|it| {
-            self.subscribe_callbacks.insert(it, callback);
+            self.state.subscribe_callbacks.insert(it, callback);
             it.to_string()
         })
     }
 
     fn unsubscribe(&self, id: PyUuid) -> PyResult<()> {
-        self.invoke::<()>(Command::Unsubscribe(id.0)).map(|_| {
-            self.subscribe_callbacks.remove(&id.0);
+        self.invoke::<()>(RawCommand::Unsubscribe(id.0)).map(|_| {
+            self.state.subscribe_callbacks.remove(&id.0);
         })
     }
 
@@ -207,7 +254,7 @@ impl ClientImpl {
         // TODO optimize
         let json = py.import("json")?;
         let args: String = json.getattr("dumps")?.call1((args,))?.extract()?;
-        let resp: String = self.invoke(Command::Call {
+        let resp: String = self.invoke(RawCommand::Call {
             name: name.to_owned(),
             args,
             timeout,
@@ -216,19 +263,19 @@ impl ClientImpl {
     }
 
     fn register_rpc(&self, name: String, callback: PyObject) -> PyResult<()> {
-        self.invoke::<()>(Command::RegisterRpc {
+        self.invoke::<()>(RawCommand::RegisterRpc {
             name: name.clone(),
             callback: callback.as_ptr() as _,
         })
         .map(|_| {
-            self.rpc_callbacks.insert(name, callback);
+            self.state.rpc_callbacks.insert(name, callback);
         })
     }
 
     fn unregister_rpc(&self, name: String) -> PyResult<()> {
-        self.invoke::<()>(Command::UnregisterRpc(name.clone()))
+        self.invoke::<()>(RawCommand::UnregisterRpc(name.clone()))
             .map(|_| {
-                self.rpc_callbacks.remove(&name);
+                self.state.rpc_callbacks.remove(&name);
             })
     }
 
@@ -283,16 +330,36 @@ pub fn init(
     plugin_name: &str,
     socket: Arc<IpcSocket<client::Command>>,
 ) -> PyResult<()> {
+    let core = Core(Arc::new(State::new(socket)));
     let builtins = py.import("builtins")?;
-    builtins.setattr("_impl", ClientImpl::new(socket).into_py(py))?;
+    builtins.setattr(
+        "_internal_client",
+        ClientImpl {
+            state: core.0.clone(),
+            session: Some(core.0.invoke(None, RawCommand::GetInternalSession)?),
+        }
+        .into_py(py),
+    )?;
+    builtins.setattr(
+        "_guest_client",
+        ClientImpl {
+            state: core.0.clone(),
+            session: None,
+        }
+        .into_py(py),
+    )?;
+    builtins.setattr("_core", core.into_py(py))?;
 
+    let path = ROOT_PATH.join("novi.py");
     let m = PyModule::from_code(
         py,
-        &std::fs::read_to_string(ROOT_PATH.join("novi.py")).expect("failed to load novi.py"),
-        "novi.py",
+        &std::fs::read_to_string(&path).expect("failed to load novi.py"),
+        &path.display().to_string(),
         "novi",
     )?;
-    builtins.delattr("_impl")?;
+    builtins.delattr("_internal_client")?;
+    builtins.delattr("_guest_client")?;
+    builtins.delattr("_core")?;
 
     py.run(
         r#"

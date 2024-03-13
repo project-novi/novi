@@ -1,7 +1,7 @@
 use super::{Close, Execute, FlattenedObject, IpcSocket, PlainError};
 use crate::{py::ObjectImpl, ErrorKind};
 use async_trait::async_trait;
-use pyo3::{exceptions::PyException, prelude::*};
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -16,7 +16,13 @@ impl From<&PyErr> for PlainError {
 }
 impl From<PlainError> for PyErr {
     fn from(e: PlainError) -> Self {
-        PyErr::new::<PyException, _>(e.message)
+        Python::with_gil(move |py| {
+            let error = py.import("novi")?.getattr("NoviError")?;
+            error
+                .call1((e.kind.error_code(), format!("{:?}", e.kind), e.message))
+                .map(PyErr::from_value)
+        })
+        .unwrap()
     }
 }
 

@@ -173,6 +173,7 @@ impl<T> Context<T> for Option<T> {
 }
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[repr(u16)]
 pub enum ErrorKind {
     #[default]
     Unspecified,
@@ -203,6 +204,11 @@ pub enum ErrorKind {
 
     RpcConflict,
     RpcTimeout,
+}
+impl ErrorKind {
+    pub fn error_code(self) -> u16 {
+        self as u16
+    }
 }
 
 impl From<io::Error> for Error {

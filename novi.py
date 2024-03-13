@@ -27,6 +27,19 @@ P = ParamSpec('P')
 T = TypeVar('T')
 
 
+class NoviError(Exception):
+    error_core: int
+    kind: str
+    message: str
+
+    def __init__(self, error_code: int, kind: str, message: str):
+        super().__init__(message)
+
+        self.error_code = error_code
+        self.kind = kind
+        self.message = message
+
+
 class TagValue:
     value: Optional[str]
     updated: datetime
@@ -35,12 +48,13 @@ class TagValue:
 Tags = Dict[str, Optional[str]]
 RpcArgs = Dict[str, any]
 
+plugin_db = None
+plugin_db_lock = threading.Lock()
+
 
 class Client:
     def __init__(self, impl):
         self.impl = impl
-        self.plugin_db = None
-        self.plugin_db_lock = threading.Lock()
 
     def add_object(self, tags: Tags) -> 'Object':
         return Object(self.impl.add_object(tags), self)
@@ -124,7 +138,7 @@ class Client:
 
                 if once:
                     once_lock.acquire()
-                    self.plugin_db[f'novi.ckpt:{once_key}'] = obj.updated
+                    plugin_db[f'novi.ckpt:{once_key}'] = obj.updated
                     once_lock.release()
 
         if once:
@@ -192,20 +206,22 @@ class Client:
 
     @property
     def db(self) -> shelve.Shelf:
-        if self.plugin_db:
-            return self.plugin_db
+        global plugin_db, plugin_db_lock
+
+        if plugin_db:
+            return plugin_db
 
         # Why we need a lock here:
         # open_db contains native methods that can allow
         # GIL to be released, which can cause re-entrance
-        self.plugin_db_lock.acquire()
+        plugin_db_lock.acquire()
         try:
-            if self.plugin_db is None:
-                self.plugin_db = self.open_db('plugin')
+            if plugin_db is None:
+                plugin_db = self.open_db('plugin')
         finally:
-            self.plugin_db_lock.release()
+            plugin_db_lock.release()
 
-        return self.plugin_db
+        return plugin_db
 
     def subs(self, filter: str, **kwargs):
         return lambda cb: self.subscribe(filter, cb, **kwargs)
@@ -249,9 +265,6 @@ class Client:
             return res_cb
 
         return decorator
-
-
-client = Client(_impl)
 
 
 class Object:
@@ -365,4 +378,24 @@ def move(src: Union[Path, str], dst: Union[Path, str], /):
         src.unlink()
 
 
-__all__ = ['Client', 'Object', 'TagValue', 'Tags', 'move']
+core = _core
+internal_client = Client(_internal_client)
+guest_client = Client(_guest_client)
+client = internal_client
+
+
+def login(name: str, password: str) -> Client:
+    return Client(core.login(name, password))
+
+
+__all__ = [
+    'Client',
+    'Object',
+    'TagValue',
+    'Tags',
+    'NoviError',
+    'internal_client',
+    'guest_client',
+    'client',
+    'move',
+]

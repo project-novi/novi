@@ -11,16 +11,10 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fmt::{Debug, Display},
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
+    sync::Arc,
 };
-use tokio::{
-    sync::{mpsc, Mutex, Semaphore},
-    task_local,
-};
-use tracing::{error, warn};
+use tokio::sync::{oneshot, Mutex, Semaphore};
+use tracing::error;
 use uuid::Uuid;
 
 pub mod compact_date_time {
@@ -172,17 +166,12 @@ pub trait Execute: Sized {
     async fn execute(self, socket: &Arc<IpcSocket<Self>>) -> Result<Vec<u8>, Self::Error>;
 }
 
+type RawResp = Result<Vec<u8>, PlainError>;
+
 #[derive(Serialize, Deserialize, Debug)]
-enum ExecuteOrResp<E> {
-    Execute(E),
-    Resp(Vec<u8>),
-    Error(PlainError),
-}
-#[derive(Serialize, Deserialize, Debug)]
-struct Message<E> {
-    issue: bool,
-    id: u32,
-    data: ExecuteOrResp<E>,
+enum Message<E> {
+    Execute(u32, E),
+    Resp(u32, RawResp),
 }
 
 struct Arena<T> {
@@ -210,25 +199,11 @@ impl<T> Arena<T> {
         }
     }
 
-    fn remove(&mut self, i: usize) {
+    fn remove(&mut self, i: usize) -> Option<T> {
         self.count -= 1;
-        self.slots[i] = None;
+        let res = self.slots[i].take();
         self.free.push(i);
-    }
-}
-
-struct CallbackState<E> {
-    sender: Option<IpcSender<E>>,
-    other_id: Option<u32>,
-    panicked: bool,
-}
-
-fn load_id(id: &AtomicU32) -> Option<u32> {
-    let id = id.load(Ordering::SeqCst);
-    if id == u32::MAX {
-        None
-    } else {
-        Some(id)
+        res
     }
 }
 
@@ -237,17 +212,12 @@ pub trait Close {
     async fn close(&self);
 }
 
-task_local! {
-    static CURRENT_ID: AtomicU32;
-    static OTHER_ID: u32;
-}
-type IpcSender<E> = mpsc::Sender<Message<E>>;
 pub struct IpcSocket<E: Execute> {
     tx: Mutex<ipc::OwnedWriteHalf>,
-    callbacks: Mutex<Arena<CallbackState<E>>>,
+    callbacks: Mutex<Arena<oneshot::Sender<RawResp>>>,
     pub context: E::Context,
     semaphore: Semaphore,
-    name: String,
+    _name: String,
 }
 impl<E> IpcSocket<E>
 where
@@ -268,7 +238,7 @@ where
             callbacks: Mutex::new(Arena::new()),
             context,
             semaphore: Semaphore::new(max_concurrent),
-            name,
+            _name: name,
         });
         tokio::spawn({
             let this = Arc::clone(&this);
@@ -287,53 +257,17 @@ where
                     rx.read_exact(&mut buf).await.expect("failed to read");
                     let msg: Message<E> = postcard::from_bytes(&buf).unwrap();
 
-                    // println!("{} recv {msg:?}", this.name);
-                    // if let ExecuteOrResp::Resp(res) = &msg.data {
-                    // println!("length {}", res.len());
-                    // }
-
-                    if msg.issue {
-                        match msg.data {
-                            ExecuteOrResp::Execute(e) => {
-                                // TODO error handling
-                                let this = Arc::clone(&this);
-                                tokio::spawn(internal_scope(async move {
-                                    let _permit = this.semaphore.acquire().await.unwrap();
-                                    if let Err(err) = CURRENT_ID
-                                        .scope(
-                                            AtomicU32::new(u32::MAX),
-                                            OTHER_ID.scope(msg.id, this.dispatch(msg.id as _, e)),
-                                        )
-                                        .await
-                                    {
-                                        warn!(
-                                            name = this.name,
-                                            err = E::format_error(&err),
-                                            "failed to execute"
-                                        );
-                                    }
-                                }));
-                            }
-                            _ => {
-                                panic!("unexpected response");
-                            }
+                    match msg {
+                        Message::Execute(id, e) => {
+                            let this = Arc::clone(&this);
+                            tokio::spawn(internal_scope(async move {
+                                let _permit = this.semaphore.acquire().await.unwrap();
+                                this.dispatch(id, e).await;
+                            }));
                         }
-                    } else {
-                        let mut cb = this.callbacks.lock().await;
-                        let state = &mut cb.slots[msg.id as usize].as_mut().unwrap();
-                        if state.other_id.is_none() && matches!(msg.data, ExecuteOrResp::Execute(_))
-                        {
-                            let mut bytes = [0; 4];
-                            rx.read_exact(&mut bytes).await.expect("failed to read");
-                            state.other_id = Some(u32::from_le_bytes(bytes));
-                            // println!(
-                            // "{} knows the other is {}",
-                            // this.name,
-                            // u32::from_le_bytes(bytes)
-                            // );
-                        }
-                        if state.sender.as_ref().unwrap().send(msg).await.is_err() {
-                            warn!(name = this.name, "channel closed");
+                        Message::Resp(id, res) => {
+                            let tx = this.callbacks.lock().await.remove(id as usize).unwrap();
+                            tx.send(res).unwrap();
                         }
                     }
                 }
@@ -343,47 +277,10 @@ where
         this
     }
 
-    async fn dispatch(self: &Arc<Self>, id: u32, e: E) -> Result<(), E::Error> {
+    async fn dispatch(self: &Arc<Self>, id: u32, e: E) {
+        // TODO print error
         let res = e.execute(self).await;
-        match CURRENT_ID.with(load_id) {
-            Some(id) => {
-                let mut cb = self.callbacks.lock().await;
-                let state = cb.slots[id as usize].as_mut().unwrap();
-                if state.sender.is_none() {
-                    cb.remove(id as usize);
-                }
-            }
-            None => {}
-        }
-        let (data, res) = match res {
-            Ok(data) => (ExecuteOrResp::Resp(data), Ok(())),
-            Err(err) => {
-                let need_to_send = match CURRENT_ID.with(load_id) {
-                    Some(id) => {
-                        let mut cb = self.callbacks.lock().await;
-                        let state = cb.slots[id as usize].as_mut().unwrap();
-                        if !state.panicked {
-                            state.panicked = true;
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    None => true,
-                };
-
-                if need_to_send {
-                    (ExecuteOrResp::Error((&err).into()), Err(err))
-                } else {
-                    return Err(err);
-                }
-            }
-        };
-        let msg = Message::<()> {
-            issue: false,
-            id,
-            data,
-        };
+        let msg = Message::<()>::Resp(id, res.map_err(|err| (&err).into()));
         let buf = postcard::to_allocvec(&msg).unwrap();
         async {
             let mut tx = self.tx.lock().await;
@@ -392,101 +289,28 @@ where
         }
         .await
         .expect("failed to write");
-
-        res
-    }
-
-    async fn invoke_inner<R: DeserializeOwned, Req: Serialize>(
-        self: &Arc<Self>,
-        req: Req,
-    ) -> Result<R, E::Error> {
-        let (tx, mut rx) = mpsc::channel(16);
-        // issue: old_sender & other_id is None
-        // send + inform: old_sender is None while other_id is Some
-        // send: old_sender is Some and other_id is Some
-        let (id, old_sender, mut other_id) = match CURRENT_ID.with(load_id) {
-            Some(id) => {
-                let mut cb = self.callbacks.lock().await;
-                let state = &mut cb.slots[id as usize].as_mut().unwrap();
-                let old_sender = std::mem::replace(&mut state.sender, Some(tx));
-                (id, old_sender, state.other_id)
-            }
-            None => {
-                let other_id = OTHER_ID.try_with(|it| *it).ok();
-                let id = self.callbacks.lock().await.insert(CallbackState {
-                    sender: Some(tx),
-                    other_id,
-                    panicked: false,
-                }) as u32;
-                CURRENT_ID.with(|it| it.store(id, Ordering::SeqCst));
-                (id, None, other_id)
-            }
-        };
-        let is_issue = old_sender.is_none() && other_id.is_none();
-
-        let buf = postcard::to_allocvec(&Message {
-            issue: other_id.is_none(),
-            id: other_id.unwrap_or(id),
-            data: ExecuteOrResp::Execute(req),
-        })
-        .unwrap();
-
-        async {
-            let mut tx = self.tx.lock().await;
-            tx.write_all(&(buf.len() as u32).to_le_bytes()).await?;
-            tx.write_all(&buf).await?;
-            if old_sender.is_none() && other_id.is_some() {
-                tx.write_all(&id.to_le_bytes()).await?;
-            }
-            std::io::Result::Ok(())
-        }
-        .await
-        .expect("failed to write");
-
-        loop {
-            let msg = rx.recv().await.unwrap();
-            match msg.data {
-                ExecuteOrResp::Resp(res) => {
-                    if is_issue {
-                        let mut cb = self.callbacks.lock().await;
-                        if let Some(old_sender) = old_sender {
-                            cb.slots[id as usize].as_mut().unwrap().sender = Some(old_sender);
-                        } else {
-                            cb.remove(id as usize);
-                        }
-                    }
-                    break Ok(postcard::from_bytes(&res).unwrap());
-                }
-                ExecuteOrResp::Execute(e) => {
-                    if other_id.is_none() {
-                        other_id = self.callbacks.lock().await.slots[id as usize]
-                            .as_ref()
-                            .unwrap()
-                            .other_id;
-                    }
-                    self.dispatch(other_id.unwrap(), e).await?;
-                }
-                ExecuteOrResp::Error(plain) => {
-                    self.callbacks.lock().await.slots[id as usize]
-                        .as_mut()
-                        .unwrap()
-                        .panicked = true;
-                    return Err(plain.into());
-                }
-            }
-        }
     }
 
     pub async fn invoke<R: DeserializeOwned, Req: Serialize>(
         self: &Arc<Self>,
         req: Req,
     ) -> Result<R, E::Error> {
-        if CURRENT_ID.try_with(|_| ()).is_err() {
-            CURRENT_ID
-                .scope(AtomicU32::new(u32::MAX), self.invoke_inner(req))
-                .await
-        } else {
-            self.invoke_inner(req).await
+        let (tx, rx) = oneshot::channel();
+        let id = self.callbacks.lock().await.insert(tx) as u32;
+        let buf = postcard::to_allocvec(&Message::Execute(id, req)).unwrap();
+
+        async {
+            let mut tx = self.tx.lock().await;
+            tx.write_all(&(buf.len() as u32).to_le_bytes()).await?;
+            tx.write_all(&buf).await
+        }
+        .await
+        .expect("failed to write");
+
+        let resp = rx.await.expect("failed to receive");
+        match resp {
+            Ok(data) => Ok(postcard::from_bytes(&data).unwrap()),
+            Err(err) => Err(err.into()),
         }
     }
 }

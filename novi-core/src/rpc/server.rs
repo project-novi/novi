@@ -1,5 +1,7 @@
 use super::{client, Close, Execute, FlattenedObject, IpcSocket};
-use crate::{Error, Novi, Object, Tags, TimeRange};
+use crate::{
+    anyhow, session::INTERNAL_SESSION, Error, Novi, Object, Result, Session, Tags, TimeRange,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
@@ -20,17 +22,28 @@ pub async fn wait_terminate(pid: u32) {
 }
 
 pub fn new_socket(novi: Arc<Novi>, stream: ipc::LocalSocketStream) -> Arc<IpcSocket<Command>> {
+    let sessions = DashMap::new();
+    let internal_session = Uuid::new_v4();
+    sessions.insert(internal_session, INTERNAL_SESSION.clone());
+
     let context = ServerContext {
         novi,
         pid: stream.peer_pid().unwrap(),
         subs: DashSet::new(),
         rpcs: DashSet::new(),
+        sessions,
+        internal_session,
     };
     IpcSocket::new(stream, context, 128, "server".to_owned())
 }
 
 #[derive(Serialize, Deserialize)]
-pub enum Command {
+pub struct Command {
+    pub session: Option<Uuid>,
+    pub command: RawCommand,
+}
+#[derive(Serialize, Deserialize)]
+pub enum RawCommand {
     AddObject(Tags),
     GetObject(Uuid),
     SetObjectTags {
@@ -65,6 +78,11 @@ pub enum Command {
         callback: u64,
     },
     UnregisterRpc(String),
+    GetInternalSession,
+    Login {
+        name: String,
+        password: String,
+    },
 }
 
 pub struct ServerContext {
@@ -72,6 +90,8 @@ pub struct ServerContext {
     pid: u32,
     subs: DashSet<Uuid>,
     rpcs: DashSet<String>,
+    sessions: DashMap<Uuid, Arc<Session>>,
+    internal_session: Uuid,
 }
 #[async_trait]
 impl Close for ServerContext {
@@ -92,27 +112,21 @@ impl Close for ServerContext {
     }
 }
 
-#[async_trait]
-impl Execute for Command {
-    type Context = ServerContext;
-    type Error = Error;
-
-    fn format_error(err: &Self::Error) -> String {
-        format!("{err:?}")
-    }
-
-    async fn execute(self, socket: &Arc<IpcSocket<Self>>) -> Result<Vec<u8>, Self::Error> {
+impl RawCommand {
+    async fn execute(self, socket: &Arc<IpcSocket<Command>>) -> Result<Vec<u8>> {
         let context = &socket.context;
         let novi = &context.novi;
         fn wrap<T: Serialize>(value: T) -> Vec<u8> {
             postcard::to_allocvec(&value).unwrap()
         }
         Ok(match self {
-            Command::AddObject(tags) => {
+            RawCommand::AddObject(tags) => {
                 wrap(novi.add_object(tags).await.map(FlattenedObject::from)?)
             }
-            Command::GetObject(id) => wrap(novi.get_object(id).await.map(FlattenedObject::from)?),
-            Command::SetObjectTags {
+            RawCommand::GetObject(id) => {
+                wrap(novi.get_object(id).await.map(FlattenedObject::from)?)
+            }
+            RawCommand::SetObjectTags {
                 id,
                 tags,
                 force_update,
@@ -121,8 +135,8 @@ impl Execute for Command {
                     .await
                     .map(FlattenedObject::from)?,
             ),
-            Command::DeleteObject(id) => wrap(novi.delete_object(id).await?),
-            Command::Query {
+            RawCommand::DeleteObject(id) => wrap(novi.delete_object(id).await?),
+            RawCommand::Query {
                 filter,
                 checkpoint,
                 updated_range,
@@ -145,7 +159,7 @@ impl Execute for Command {
                         .collect::<Vec<_>>()
                 })?,
             ),
-            Command::Subscribe {
+            RawCommand::Subscribe {
                 filter,
                 callback,
                 checkpoint,
@@ -179,12 +193,12 @@ impl Execute for Command {
                 context.subs.insert(id);
                 wrap(id)
             }
-            Command::Unsubscribe(id) => {
+            RawCommand::Unsubscribe(id) => {
                 novi.unsubscribe(id)?;
                 socket.context.subs.remove(&id);
                 wrap(())
             }
-            Command::Call {
+            RawCommand::Call {
                 name,
                 args,
                 timeout,
@@ -197,7 +211,7 @@ impl Execute for Command {
                 .await
                 .map(|it| it.to_string())?,
             ),
-            Command::RegisterRpc { name, callback } => {
+            RawCommand::RegisterRpc { name, callback } => {
                 let socket = Arc::clone(socket);
                 novi.register_rpc(
                     &name,
@@ -220,11 +234,44 @@ impl Execute for Command {
                 context.rpcs.insert(name);
                 wrap(())
             }
-            Command::UnregisterRpc(name) => {
+            RawCommand::UnregisterRpc(name) => {
                 novi.unregister_rpc(&name)?;
                 context.rpcs.remove(&name);
                 wrap(())
             }
+            RawCommand::GetInternalSession => wrap(context.internal_session),
+            RawCommand::Login { name, password } => {
+                let session = novi.login(&name, &password).await?;
+                let id = Uuid::new_v4();
+                context.sessions.insert(id, session.clone());
+                wrap(id)
+            }
         })
+    }
+}
+
+#[async_trait]
+impl Execute for Command {
+    type Context = ServerContext;
+    type Error = Error;
+
+    fn format_error(err: &Self::Error) -> String {
+        format!("{err:?}")
+    }
+
+    async fn execute(self, socket: &Arc<IpcSocket<Self>>) -> Result<Vec<u8>, Self::Error> {
+        match self.session {
+            Some(id) => {
+                let session = socket
+                    .context
+                    .sessions
+                    .get(&id)
+                    .map(|it| it.clone())
+                    .ok_or_else(|| anyhow!("invalid session"))?;
+
+                session.enter(self.command.execute(socket)).await
+            }
+            None => self.command.execute(socket).await,
+        }
     }
 }

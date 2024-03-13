@@ -1,7 +1,7 @@
 pub mod client;
 pub mod server;
 
-use crate::{user::internal_scope, ErrorKind, Result, TagValue};
+use crate::{session::internal_scope, ErrorKind, Result, TagValue};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::io::{AsyncReadExt, AsyncWriteExt};

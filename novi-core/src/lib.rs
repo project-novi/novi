@@ -13,6 +13,7 @@ mod py;
 mod query;
 mod rpc;
 mod rule;
+mod session;
 mod tag;
 mod tag_search;
 pub mod user;
@@ -20,7 +21,6 @@ mod vector;
 
 pub use client::{EventKind, RpcProvider, Subscriber};
 pub use config::NoviConfig;
-use error::ResultExt;
 pub use error::{Error, ErrorKind, Result};
 pub use filter::{Filter, FilterKind, TimeRange};
 pub use image::InferredTag;
@@ -28,6 +28,7 @@ pub use lock::{KeyMutex, KeyRwLock};
 pub use model::Model;
 pub use object::{Object, ObjectMeta};
 pub use rpc::sub_main;
+pub use session::Session;
 pub use tag::TagValue;
 pub use user::{AccessKind, User};
 
@@ -40,6 +41,7 @@ use argon2::{
 };
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use error::ResultExt;
 use image::ImageModel;
 use interprocess::local_socket::tokio as ipc;
 use lock::OwnedMutexGuard;
@@ -72,9 +74,10 @@ use tokio::{
     task_local,
 };
 use tracing::{debug, info, warn};
-use user::{internal_scope, USER};
 use uuid::Uuid;
 use vector::Vector;
+
+use crate::session::internal_scope;
 
 pub static ROOT_PATH: Lazy<PathBuf> = Lazy::new(|| {
     (if std::env::args().nth(1).as_deref() == Some("--plugin-host") {
@@ -514,12 +517,13 @@ impl Novi {
         tags: impl Iterator<Item = &'a str>,
         edit: bool,
     ) -> Result<()> {
-        let can_modify_internal = user::has_perm("novi.tag.internal:modify");
+        let can_modify_internal = session::has_perm("novi.tag.internal:modify");
 
         for tag in tags {
             if edit {
                 if let Some(name) = tag.strip_prefix('@') {
-                    if !can_modify_internal && !user::has_perm(&format!("novi.itag.modify:{name}"))
+                    if !can_modify_internal
+                        && !session::has_perm(&format!("novi.itag.modify:{name}"))
                     {
                         bail!(@PermissionDenied "can't modify tag {tag:?}");
                     }
@@ -532,7 +536,7 @@ impl Novi {
     }
 
     async fn check_object(&self, object: &Object, kind: AccessKind) -> Result<()> {
-        if USER.with(|it| it.id.map_or(false, |it| Some(it) == object.meta.creator)) {
+        if session::user_id().map_or(false, |it| Some(it) == object.meta.creator) {
             return Ok(());
         }
 
@@ -540,7 +544,7 @@ impl Novi {
             let s = format!("@access.{kind}:");
             for (tag, _) in object.tags.range(s.clone()..=(s.clone() + "\u{ff}")) {
                 let perm = tag.strip_prefix(&s).unwrap();
-                if !user::has_perm(perm) {
+                if !session::has_perm(perm) {
                     bail!(@AccessDenied "access {kind:?} to object {}", object.id);
                 }
             }
@@ -612,7 +616,7 @@ impl Novi {
         tags: Tags,
         rule_set: Option<&RuleSet>,
     ) -> Result<Arc<Object>> {
-        user::check_perm("novi.object.create")?;
+        session::check_perm("novi.object.create")?;
 
         self.validate_tags(tags.keys().map(|it| it.as_str()), true)
             .await?;
@@ -627,7 +631,7 @@ impl Novi {
             id: Uuid::default(),
             tags,
             meta: ObjectMeta {
-                creator: user::id(),
+                creator: session::user_id(),
                 updated: time,
                 created: time,
             },
@@ -905,7 +909,7 @@ impl Novi {
 
 impl Novi {
     async fn apply_rules_inner(&self, rule_set: &RuleSet, rules: &[Rule]) -> Result<()> {
-        user::check_perm("novi.rule.modify")?;
+        session::check_perm("novi.rule.modify")?;
 
         let mut q = query_unsatisfied(&rules);
         q.add_select("*");
@@ -935,7 +939,7 @@ impl Novi {
     }
 
     pub async fn add_rules(&self, s: &str, apply_old: bool) -> Result<Arc<Object>> {
-        user::check_perm("novi.rule.modify")?;
+        session::check_perm("novi.rule.modify")?;
 
         let rules = parse_rules(s)?;
         info!(?rules, "add rules");
@@ -961,7 +965,7 @@ impl Novi {
     }
 
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
-        user::check_perm("novi.rule.modify")?;
+        session::check_perm("novi.rule.modify")?;
 
         let mut rule_set = self.rule_set.write().await;
 
@@ -974,7 +978,7 @@ impl Novi {
     }
 
     pub async fn get_rules(&self) -> Result<BTreeMap<Uuid, String>> {
-        user::check_perm("novi.rule.list")?;
+        session::check_perm("novi.rule.list")?;
 
         Ok(self
             .query(
@@ -1029,7 +1033,7 @@ impl Novi {
 
     pub async fn with_user<R>(&self, id: Uuid, f: impl Future<Output = R>) -> R {
         let user = self.get_user(id).await;
-        USER.scope(user, f).await
+        Session::new(user).enter(f).await
     }
 
     pub async fn register(&self, name: &str, password: &str) -> Result<Uuid> {
@@ -1113,7 +1117,7 @@ impl Novi {
             return Ok(Arc::clone(tag));
         }
 
-        user::check_perm("novi.object.create")?;
+        session::check_perm("novi.object.create")?;
 
         let id = internal_scope(self.add_model(&Tag::new(tag.to_owned())))
             .await?
@@ -1187,13 +1191,13 @@ impl Novi {
     }
 
     pub fn register_rpc(&self, name: &str, provider: RpcProvider) -> Result<()> {
-        user::check_perm("novi.rpc.register")?;
+        session::check_perm("novi.rpc.register")?;
 
         info!(name, "register rpc");
         if let dashmap::mapref::entry::Entry::Vacant(vacant) =
             self.rpc_providers.entry(name.to_owned())
         {
-            vacant.insert((user::id(), provider));
+            vacant.insert((session::user_id(), provider));
             Ok(())
         } else {
             bail!(@RpcConflict "rpc {name:?} already registered");
@@ -1201,11 +1205,11 @@ impl Novi {
     }
 
     pub fn unregister_rpc(&self, name: &str) -> Result<()> {
-        user::check_perm("novi.rpc.register")?;
+        session::check_perm("novi.rpc.register")?;
 
         if self
             .rpc_providers
-            .remove_if(name, |_, rpc| rpc.0 == user::id())
+            .remove_if(name, |_, rpc| rpc.0 == session::user_id())
             .is_none()
         {
             bail!(@PermissionDenied "only registrant can unregister rpc");

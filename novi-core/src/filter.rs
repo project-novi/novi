@@ -1,7 +1,7 @@
 use crate::{
     misc::wrap_nom_from_str,
     query::{pg_pattern_escape, QueryBuilder},
-    user::USER,
+    session,
     Error, ErrorKind, Object, Order, Result, TagValue,
 };
 use chrono::{DateTime, Utc};
@@ -517,18 +517,17 @@ impl Filter {
         add_range("updated", updated_range);
         add_range("created", created_range);
 
-        USER.with(|user| {
-            if !user.is_internal() {
-                use std::fmt::Write;
-                q.bind(user.perms.iter().cloned().collect::<Vec<_>>());
-                let mut s = format!("${} @> access_perms", q.take_place());
-                if let Some(id) = user.id {
-                    q.bind(id);
-                    let id = q.take_place();
-                    write!(s, " or creator = ${id}").unwrap();
-                }
-                q.add_where(s);
+        let user = session::get_user();
+        if !user.is_internal() {
+            use std::fmt::Write;
+            q.bind(user.perms.iter().cloned().collect::<Vec<_>>());
+            let mut s = format!("${} @> access_perms", q.take_place());
+            if let Some(id) = user.id {
+                q.bind(id);
+                let id = q.take_place();
+                write!(s, " or creator = ${id}").unwrap();
             }
-        });
+            q.add_where(s);
+        }
     }
 }

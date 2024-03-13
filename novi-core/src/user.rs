@@ -4,69 +4,11 @@ use once_cell::sync::Lazy;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Display,
-    future::Future,
     sync::Arc,
-    sync::Mutex,
 };
-use tokio::task_local;
 use uuid::Uuid;
 
-task_local! {
-    pub static USER: Arc<User>;
-
-    static GRANT_PERMS: Mutex<BTreeSet<String>>;
-}
-
-static INTERNAL_USER: Lazy<Arc<User>> = Lazy::new(|| {
-    Arc::new(User {
-        id: None,
-        name: String::new(),
-        password: String::new(),
-
-        roles: std::iter::once("admin".to_owned()).collect(),
-        perms: BTreeSet::new(),
-
-        tags: BTreeMap::new(),
-    })
-});
-
-pub async fn internal_scope<R>(f: impl Future<Output = R>) -> R {
-    USER.scope(INTERNAL_USER.clone(), f).await
-}
-
-pub fn blocking_internal_scope<R>(f: impl FnOnce() -> R) -> R {
-    USER.sync_scope(INTERNAL_USER.clone(), f)
-}
-
-pub async fn with_grant<R>(perm: &str, f: impl Future<Output = R>) -> R {
-    match GRANT_PERMS.try_with(|it| it.lock().unwrap().insert(perm.to_owned())) {
-        Err(_) => {
-            GRANT_PERMS
-                .scope(Mutex::default(), async move {
-                    GRANT_PERMS.with(|it| {
-                        it.lock().unwrap().insert(perm.to_owned());
-                    });
-                    let r = f.await;
-                    GRANT_PERMS.with(|it| {
-                        it.lock().unwrap().remove(perm);
-                    });
-                    r
-                })
-                .await
-        }
-        Ok(new) => {
-            let r = f.await;
-            if new {
-                GRANT_PERMS.with(|it| {
-                    it.lock().unwrap().remove(perm);
-                });
-            }
-            r
-        }
-    }
-}
-
-static GUEST_USER: Lazy<Arc<User>> = Lazy::new(|| {
+pub(crate) static GUEST_USER: Lazy<Arc<User>> = Lazy::new(|| {
     Arc::new(User {
         id: None,
         name: String::new(),
@@ -79,9 +21,18 @@ static GUEST_USER: Lazy<Arc<User>> = Lazy::new(|| {
     })
 });
 
-pub async fn guest_scope<R>(f: impl Future<Output = R>) -> R {
-    USER.scope(GUEST_USER.clone(), f).await
-}
+pub(crate) static INTERNAL_USER: Lazy<Arc<User>> = Lazy::new(|| {
+    Arc::new(User {
+        id: None,
+        name: String::new(),
+        password: String::new(),
+
+        roles: std::iter::once("admin".to_owned()).collect(),
+        perms: BTreeSet::new(),
+
+        tags: BTreeMap::new(),
+    })
+});
 
 pub struct User {
     pub id: Option<Uuid>,
@@ -224,39 +175,4 @@ impl Display for AccessKind {
         };
         f.write_str(s)
     }
-}
-
-pub fn id() -> Option<Uuid> {
-    USER.with(|it| it.id)
-}
-
-pub fn has_perm(mut perm: &str) -> bool {
-    USER.with(|it| {
-        if it.is_internal() {
-            return true;
-        }
-
-        loop {
-            if it.perms.contains(perm)
-                || GRANT_PERMS
-                    .try_with(|it| it.lock().unwrap().contains(perm))
-                    .map_or(false, |it| it)
-            {
-                return true;
-            }
-
-            if let Some(idx) = perm.rfind(['.', ':']) {
-                perm = &perm[..idx];
-            } else {
-                return false;
-            }
-        }
-    })
-}
-
-pub fn check_perm(perm: &str) -> Result<()> {
-    if !has_perm(perm) {
-        bail!(@PermissionDenied "missing permission {perm}");
-    }
-    Ok(())
 }

@@ -101,7 +101,7 @@ impl Logger {
         }
 
         if !fields.is_empty() {
-            line += &"{".bold().to_string();
+            line += &" {".bold().to_string();
             let len = fields.len();
             for (idx, (name, val)) in fields.into_iter().enumerate() {
                 use std::fmt::Write;

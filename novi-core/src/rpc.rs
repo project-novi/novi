@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::io::{AsyncReadExt, AsyncWriteExt};
 use interprocess::local_socket::tokio as ipc;
-use pyo3::{types::IntoPyDict, PyResult, Python};
+use pyo3::{types::IntoPyDict, IntoPy, PyResult, Python};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -316,28 +316,40 @@ where
 }
 
 pub async fn sub_main() {
-    let plugin_name = std::env::args().nth(2).unwrap();
+    let plugin_dir_name = std::env::args().nth(2).unwrap();
 
     let stream = ipc::LocalSocketStream::connect("@novi").await.unwrap();
     let socket = IpcSocket::<client::Command>::new(
         stream,
         client::ChildContext,
         32,
-        format!("plugin-{plugin_name}"),
+        format!("plugin-{plugin_dir_name}"),
     );
 
     let result = Python::with_gil(|py| {
-        crate::py::init(py, &plugin_name, socket)?;
+        py.import("sys")?
+            .getattr("path")?
+            .call_method1("append", ("..",))?;
+
+        crate::py::init(py, &plugin_dir_name, socket)?;
 
         let runpy = py.import("runpy")?;
-        let run_path = runpy.getattr("run_path")?;
-        run_path.call((".",), Some([("run_name", &plugin_name)].into_py_dict(py)))?;
+        runpy.getattr("run_module")?.call(
+            (&plugin_dir_name,),
+            Some(
+                [
+                    ("run_name", "__main__".into_py(py)),
+                    ("alter_sys", true.into_py(py)),
+                ]
+                .into_py_dict(py),
+            ),
+        )?;
 
         PyResult::Ok(())
     });
 
     if let Err(err) = result {
-        error!(?err, plugin = plugin_name, "failed to run python");
+        error!(?err, plugin = plugin_dir_name, "failed to run python");
         Python::with_gil(|py| err.print_and_set_sys_last_vars(py));
     }
 

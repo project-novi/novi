@@ -46,7 +46,7 @@ class TagValue:
 
 
 Tags = Dict[str, Optional[str]]
-RpcArgs = Dict[str, any]
+RpcArgs = Dict[str, Any]
 
 plugin_db = None
 plugin_db_lock = threading.Lock()
@@ -173,7 +173,7 @@ class Client:
     ) -> Any:
         return self.impl.call(name, args, timeout)
 
-    def register_rpc(self, name: str, callback: Callable[[str, RpcArgs], any]) -> str:
+    def register_rpc(self, name: str, callback: Callable[[str, RpcArgs], Any]) -> str:
         def wrapper(name: str, args: RpcArgs):
             res = callback(name, args)
             if hasattr(res, 'model_dump_json'):

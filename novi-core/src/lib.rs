@@ -390,6 +390,9 @@ impl Novi {
             return Ok(None);
         }
         let info: PluginInfo = serde_yaml::from_reader(std::fs::File::open(info_file)?).wrap()?;
+        if info.disabled {
+            return Ok(None);
+        }
         info!(name = info.name, "loading plugin");
         let process = std::process::Command::new(std::env::current_exe()?)
             .arg("--plugin-host")

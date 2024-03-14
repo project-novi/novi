@@ -13,6 +13,9 @@ pub struct PluginInfo {
     pub keywords: Vec<String>,
     #[serde(default)]
     pub namespaces: Vec<String>,
+
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 pub(crate) struct PluginState {

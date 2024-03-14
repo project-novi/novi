@@ -393,6 +393,7 @@ __all__ = [
     'Object',
     'TagValue',
     'Tags',
+    'RpcArgs',
     'NoviError',
     'internal_client',
     'guest_client',

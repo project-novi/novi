@@ -5,7 +5,7 @@ use crate::{session::internal_scope, ErrorKind, Result, TagValue};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::io::{AsyncReadExt, AsyncWriteExt};
-use interprocess::local_socket::tokio as ipc;
+use interprocess::local_socket::tokio as tokio_ipc;
 use pyo3::{types::IntoPyDict, IntoPy, PyResult, Python};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
@@ -213,7 +213,7 @@ pub trait Close {
 }
 
 pub struct IpcSocket<E: Execute> {
-    tx: Mutex<ipc::OwnedWriteHalf>,
+    tx: Mutex<tokio_ipc::OwnedWriteHalf>,
     callbacks: Mutex<Arena<oneshot::Sender<RawResp>>>,
     pub context: E::Context,
     semaphore: Semaphore,
@@ -227,7 +227,7 @@ where
     for<'a> &'a E::Error: Into<PlainError>,
 {
     pub fn new(
-        stream: ipc::LocalSocketStream,
+        stream: tokio_ipc::LocalSocketStream,
         context: E::Context,
         max_concurrent: usize,
         name: String,
@@ -318,7 +318,9 @@ where
 pub async fn sub_main() {
     let plugin_dir_name = std::env::args().nth(2).unwrap();
 
-    let stream = ipc::LocalSocketStream::connect("@novi").await.unwrap();
+    let stream = tokio_ipc::LocalSocketStream::connect("@novi")
+        .await
+        .unwrap();
     let socket = IpcSocket::<client::Command>::new(
         stream,
         client::ChildContext,

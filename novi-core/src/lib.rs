@@ -3,6 +3,7 @@ mod config;
 mod error;
 mod filter;
 mod image;
+mod ipc;
 mod lock;
 pub mod log;
 mod misc;
@@ -11,7 +12,6 @@ mod object;
 mod plugin;
 mod py;
 mod query;
-mod rpc;
 mod rule;
 mod session;
 mod tag;
@@ -24,10 +24,10 @@ pub use config::NoviConfig;
 pub use error::{Error, ErrorKind, Result};
 pub use filter::{Filter, FilterKind, TimeRange};
 pub use image::InferredTag;
+pub use ipc::sub_main;
 pub use lock::{KeyMutex, KeyRwLock};
 pub use model::Model;
 pub use object::{Object, ObjectMeta};
-pub use rpc::sub_main;
 pub use session::Session;
 pub use tag::TagValue;
 pub use user::{AccessKind, User};
@@ -43,7 +43,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use error::ResultExt;
 use image::ImageModel;
-use interprocess::local_socket::tokio as ipc;
+use interprocess::local_socket::tokio as tokio_ipc;
 use lock::OwnedMutexGuard;
 use moka::future::Cache;
 use once_cell::sync::Lazy;
@@ -345,11 +345,11 @@ impl Novi {
 
         let novi = Arc::clone(&res);
         tokio::spawn(async move {
-            let listener = ipc::LocalSocketListener::bind("@novi").unwrap();
+            let listener = tokio_ipc::LocalSocketListener::bind("@novi").unwrap();
             loop {
                 let stream = listener.accept().await.unwrap();
                 // TODO optimize: only one task on server side
-                let _ = rpc::server::new_socket(Arc::clone(&novi), stream);
+                let _ = ipc::server::new_socket(Arc::clone(&novi), stream);
             }
         });
 
@@ -434,7 +434,7 @@ impl Novi {
                 .kill()
                 .and_then(|_| state.process.wait())
                 .unwrap();
-            rpc::server::wait_terminate(pid).await;
+            ipc::server::wait_terminate(pid).await;
         }
         let state = match Self::load_plugin(name) {
             Ok(Some(it)) => it,

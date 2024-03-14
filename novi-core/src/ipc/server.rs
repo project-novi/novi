@@ -51,6 +51,7 @@ pub enum RawCommand {
         tags: Tags,
         force_update: bool,
     },
+    DeleteObjectTag(Uuid, String),
     DeleteObject(Uuid),
     Query {
         filter: String,
@@ -132,6 +133,11 @@ impl RawCommand {
                 force_update,
             } => wrap(
                 novi.set_object_tags(id, tags, force_update)
+                    .await
+                    .map(FlattenedObject::from)?,
+            ),
+            RawCommand::DeleteObjectTag(id, tag) => wrap(
+                novi.delete_object_tag(id, &tag)
                     .await
                     .map(FlattenedObject::from)?,
             ),

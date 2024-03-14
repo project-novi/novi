@@ -1,12 +1,10 @@
-// TODO async version
-
 use crate::{
-    log::LOGGER,
-    rpc::{
+    ipc::{
         client,
         server::{Command, RawCommand},
         FlattenedObject, IpcSocket,
     },
+    log::LOGGER,
     Object, ObjectMeta, TagValue, Tags, ROOT_PATH,
 };
 use chrono::{DateTime, Utc};
@@ -17,12 +15,36 @@ use pyo3::{
     types::{IntoPyDict, PyDict},
 };
 use serde::de::DeserializeOwned;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
 use tokio::runtime::Handle;
 use tracing::Level;
 use uuid::Uuid;
 
-#[pyclass]
+fn block_on<F: Future>(fut: F) -> F::Output {
+    tokio::task::block_in_place(|| Handle::current().block_on(fut))
+}
+
+#[pyclass(module = "novi")]
+struct BoxedFuture(Option<Pin<Box<dyn Future<Output = PyResult<PyObject>> + Send>>>);
+impl BoxedFuture {
+    fn take(&mut self) -> Pin<Box<dyn Future<Output = PyResult<PyObject>> + Send>> {
+        self.0.take().expect("future already polled")
+    }
+}
+#[pymethods]
+impl BoxedFuture {
+    fn block(&mut self, py: Python) -> PyResult<PyObject> {
+        let fut = self.take();
+        py.allow_threads(move || block_on(fut))
+    }
+
+    fn coroutine<'py>(&mut self, py: Python<'py>) -> PyResult<&'py PyAny> {
+        let fut = self.take();
+        pyo3_asyncio::tokio::future_into_py(py, fut)
+    }
+}
+
+#[pyclass(module = "novi")]
 pub struct ObjectImpl(Object);
 impl ObjectImpl {
     pub fn from_flattened(object: FlattenedObject) -> Self {
@@ -110,32 +132,48 @@ impl State {
         }
     }
 
-    fn invoke<T: Send + DeserializeOwned>(
+    async fn invoke_raw<T: Send + DeserializeOwned>(
         &self,
         session: Option<Uuid>,
         command: RawCommand,
     ) -> PyResult<T> {
-        let py = unsafe { Python::assume_gil_acquired() };
         let socket = self.socket.clone();
-        py.allow_threads(move || {
-            tokio::task::block_in_place(|| {
-                Handle::current()
-                    .block_on(async { socket.invoke(Command { session, command }).await })
-            })
-        })
+        socket.invoke(Command { session, command }).await
+    }
+
+    fn invoke<T: Send + DeserializeOwned + 'static>(
+        &self,
+        session: Option<Uuid>,
+        command: RawCommand,
+        mapper: impl FnOnce(Python, T) -> PyResult<PyObject> + Send + 'static,
+    ) -> BoxedFuture {
+        let socket = self.socket.clone();
+        BoxedFuture(Some(Box::pin(async move {
+            socket
+                .invoke(Command { session, command })
+                .await
+                .and_then(|it| Python::with_gil(|py| mapper(py, it)))
+        })))
     }
 }
 
-#[pyclass]
+#[pyclass(module = "novi")]
 struct Core(Arc<State>);
 #[pymethods]
 impl Core {
-    fn login(&self, name: String, password: String) -> PyResult<ClientImpl> {
-        let session: Uuid = self.0.invoke(None, RawCommand::Login { name, password })?;
-        Ok(ClientImpl {
-            state: self.0.clone(),
-            session: Some(session),
-        })
+    fn login(&self, name: String, password: String) -> BoxedFuture {
+        let state = self.0.clone();
+        self.0.invoke(
+            None,
+            RawCommand::Login { name, password },
+            move |py, id: Uuid| {
+                Ok(ClientImpl {
+                    state,
+                    session: Some(id),
+                }
+                .into_py(py))
+            },
+        )
     }
 
     fn guest_client(&self) -> ClientImpl {
@@ -153,42 +191,53 @@ impl Core {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "novi")]
 struct ClientImpl {
     state: Arc<State>,
     session: Option<Uuid>,
 }
 impl ClientImpl {
     #[inline]
-    fn invoke<T: Send + DeserializeOwned>(&self, command: RawCommand) -> PyResult<T> {
-        self.state.invoke(self.session, command)
+    fn invoke<T: Send + DeserializeOwned + 'static>(
+        &self,
+        command: RawCommand,
+        mapper: impl FnOnce(Python, T) -> PyResult<PyObject> + Send + 'static,
+    ) -> BoxedFuture {
+        self.state.invoke(self.session, command, mapper)
+    }
+
+    fn invoke_return_object(&self, command: RawCommand) -> BoxedFuture {
+        self.invoke(command, |py, obj: FlattenedObject| {
+            Ok(ObjectImpl::from_flattened(obj).into_py(py))
+        })
     }
 }
 #[pymethods]
 impl ClientImpl {
-    fn add_object(&self, tags: Tags) -> PyResult<ObjectImpl> {
-        self.invoke(RawCommand::AddObject(tags))
-            .map(ObjectImpl::from_flattened)
+    fn add_object(&self, tags: Tags) -> BoxedFuture {
+        self.invoke_return_object(RawCommand::AddObject(tags))
     }
 
-    fn get_object(&self, id: &str) -> PyResult<ObjectImpl> {
-        self.invoke(RawCommand::GetObject(
+    fn get_object(&self, id: &str) -> PyResult<BoxedFuture> {
+        Ok(self.invoke_return_object(RawCommand::GetObject(
             Uuid::parse_str(id).map_err(|_| PyValueError::new_err("invalid UUID"))?,
-        ))
-        .map(ObjectImpl::from_flattened)
+        )))
     }
 
-    fn set_object_tags(&self, id: PyUuid, tags: Tags, force_update: bool) -> PyResult<ObjectImpl> {
-        self.invoke(RawCommand::SetObjectTags {
+    fn set_object_tags(&self, id: PyUuid, tags: Tags, force_update: bool) -> BoxedFuture {
+        self.invoke_return_object(RawCommand::SetObjectTags {
             id: id.0,
             tags,
             force_update,
         })
-        .map(ObjectImpl::from_flattened)
     }
 
-    fn delete_object(&self, id: PyUuid) -> PyResult<()> {
-        self.invoke(RawCommand::DeleteObject(id.0))
+    fn delete_object_tag(&self, id: PyUuid, tag: String) -> BoxedFuture {
+        self.invoke_return_object(RawCommand::DeleteObjectTag(id.0, tag))
+    }
+
+    fn delete_object(&self, id: PyUuid) -> BoxedFuture {
+        self.invoke(RawCommand::DeleteObject(id.0), |py, _: ()| Ok(py.None()))
     }
 
     #[pyo3(signature = (filter, checkpoint, updated_after, updated_before, created_after, created_before, order, limit))]
@@ -202,18 +251,24 @@ impl ClientImpl {
         created_before: Option<DateTime<Utc>>,
         order: &str,
         limit: Option<u32>,
-    ) -> PyResult<Vec<ObjectImpl>> {
-        self.invoke(RawCommand::Query {
-            filter: filter.to_owned(),
-            checkpoint,
-            updated_range: (updated_after, updated_before),
-            created_range: (created_after, created_before),
-            order: order.parse()?,
-            limit,
-        })
-        .map(|objs: Vec<FlattenedObject>| {
-            objs.into_iter().map(ObjectImpl::from_flattened).collect()
-        })
+    ) -> PyResult<BoxedFuture> {
+        Ok(self.invoke(
+            RawCommand::Query {
+                filter: filter.to_owned(),
+                checkpoint,
+                updated_range: (updated_after, updated_before),
+                created_range: (created_after, created_before),
+                order: order.parse()?,
+                limit,
+            },
+            |py, objs: Vec<FlattenedObject>| {
+                Ok(objs
+                    .into_iter()
+                    .map(ObjectImpl::from_flattened)
+                    .collect::<Vec<_>>()
+                    .into_py(py))
+            },
+        ))
     }
 
     #[pyo3(signature = (filter, callback, checkpoint, with_history, exclude_unrelated))]
@@ -224,23 +279,28 @@ impl ClientImpl {
         checkpoint: Option<DateTime<Utc>>,
         with_history: bool,
         exclude_unrelated: bool,
-    ) -> PyResult<String> {
-        self.invoke::<Uuid>(RawCommand::Subscribe {
-            filter: filter.to_owned(),
-            callback: callback.as_ptr() as _,
-            checkpoint,
-            with_history,
-            exclude_unrelated,
-        })
-        .map(|it| {
-            self.state.subscribe_callbacks.insert(it, callback);
-            it.to_string()
-        })
+    ) -> BoxedFuture {
+        let state = self.state.clone();
+        self.invoke(
+            RawCommand::Subscribe {
+                filter: filter.to_owned(),
+                callback: callback.as_ptr() as _,
+                checkpoint,
+                with_history,
+                exclude_unrelated,
+            },
+            move |py, id: Uuid| {
+                state.subscribe_callbacks.insert(id, callback);
+                Ok(id.to_string().into_py(py))
+            },
+        )
     }
 
-    fn unsubscribe(&self, id: PyUuid) -> PyResult<()> {
-        self.invoke::<()>(RawCommand::Unsubscribe(id.0)).map(|_| {
-            self.state.subscribe_callbacks.remove(&id.0);
+    fn unsubscribe(&self, id: PyUuid) -> BoxedFuture {
+        let state = self.state.clone();
+        self.invoke(RawCommand::Unsubscribe(id.0), move |py, _: ()| {
+            state.subscribe_callbacks.remove(&id.0);
+            Ok(py.None())
         })
     }
 
@@ -250,33 +310,48 @@ impl ClientImpl {
         name: &str,
         args: &PyDict,
         timeout: Option<f64>,
-    ) -> PyResult<&'py PyAny> {
+    ) -> PyResult<BoxedFuture> {
         // TODO optimize
-        let json = py.import("json")?;
-        let args: String = json.getattr("dumps")?.call1((args,))?.extract()?;
-        let resp: String = self.invoke(RawCommand::Call {
-            name: name.to_owned(),
-            args,
-            timeout,
-        })?;
-        json.getattr("loads")?.call1((resp,))
+        let args: String = py
+            .import("json")?
+            .getattr("dumps")?
+            .call1((args,))?
+            .extract()?;
+        Ok(self.invoke(
+            RawCommand::Call {
+                name: name.to_owned(),
+                args,
+                timeout,
+            },
+            |py, resp: String| {
+                py.import("json")?
+                    .getattr("loads")?
+                    .call1((resp,))
+                    .map(|obj| obj.into_py(py))
+            },
+        ))
     }
 
-    fn register_rpc(&self, name: String, callback: PyObject) -> PyResult<()> {
-        self.invoke::<()>(RawCommand::RegisterRpc {
-            name: name.clone(),
-            callback: callback.as_ptr() as _,
-        })
-        .map(|_| {
-            self.state.rpc_callbacks.insert(name, callback);
-        })
+    fn register_rpc(&self, name: String, callback: PyObject) -> BoxedFuture {
+        let state = self.state.clone();
+        self.invoke(
+            RawCommand::RegisterRpc {
+                name: name.clone(),
+                callback: callback.as_ptr() as _,
+            },
+            move |py, _: ()| {
+                state.rpc_callbacks.insert(name, callback);
+                Ok(py.None())
+            },
+        )
     }
 
-    fn unregister_rpc(&self, name: String) -> PyResult<()> {
-        self.invoke::<()>(RawCommand::UnregisterRpc(name.clone()))
-            .map(|_| {
-                self.state.rpc_callbacks.remove(&name);
-            })
+    fn unregister_rpc(&self, name: String) -> BoxedFuture {
+        let state = self.state.clone();
+        self.invoke(RawCommand::UnregisterRpc(name.clone()), move |py, _: ()| {
+            state.rpc_callbacks.remove(&name);
+            Ok(py.None())
+        })
     }
 
     fn root_path(&self) -> PyResult<&str> {
@@ -284,7 +359,7 @@ impl ClientImpl {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "novi")]
 struct LogHandler(String);
 #[pymethods]
 impl LogHandler {
@@ -336,7 +411,9 @@ pub fn init(
         "_internal_client",
         ClientImpl {
             state: core.0.clone(),
-            session: Some(core.0.invoke(None, RawCommand::GetInternalSession)?),
+            session: Some(block_on(
+                core.0.invoke_raw(None, RawCommand::GetInternalSession),
+            )?),
         }
         .into_py(py),
     )?;

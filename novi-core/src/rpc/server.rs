@@ -256,7 +256,7 @@ impl Execute for Command {
     type Error = Error;
 
     fn format_error(err: &Self::Error) -> String {
-        format!("{err:?}")
+        format!("{err}")
     }
 
     async fn execute(self, socket: &Arc<IpcSocket<Self>>) -> Result<Vec<u8>, Self::Error> {

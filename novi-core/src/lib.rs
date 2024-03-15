@@ -77,7 +77,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 use vector::Vector;
 
-use crate::session::internal_scope;
+use crate::{error::Context, session::internal_scope};
 
 pub static ROOT_PATH: Lazy<PathBuf> = Lazy::new(|| {
     (if std::env::args().nth(1).as_deref() == Some("--plugin-host") {
@@ -393,13 +393,13 @@ impl Novi {
         if info.disabled {
             return Ok(None);
         }
-        info!(name = info.name, "loading plugin");
         let process = std::process::Command::new(std::env::current_exe()?)
             .arg("--plugin-host")
             .arg(&info.name)
             .env("WORKER_THREADS", "3")
             .current_dir(&path)
-            .spawn()?;
+            .spawn()
+            .with_context(|| format!("failed to load plugin {:?}", info.name))?;
         info!(name = info.name, "plugin loaded");
         Ok(Some(PluginState {
             info,

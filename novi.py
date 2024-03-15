@@ -8,6 +8,7 @@ import typeguard
 
 from dbm import gnu as gdbm
 
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
@@ -91,6 +92,13 @@ class BoxedFuture(Protocol, Generic[T]):
     def block(self) -> T: ...
 
     async def coroutine(self) -> T: ...
+
+
+caller = ContextVar('caller', default=None)
+
+
+def get_caller() -> Optional[str]:
+    return caller.get()
 
 
 class BaseClient:
@@ -212,18 +220,31 @@ class BaseClient:
                 Should have a signature of `(name: str, args: RpcArgs) -> Any`.
         """
 
-        def wrapper(name: str, args: RpcArgs):
-            res = callback(name, args)
-            if hasattr(res, 'model_dump_json'):
-                return res.model_dump_json()
-            else:
-                return json.dumps(res)
+        def wrapper(name: str, the_caller: Optional[str], args: RpcArgs):
+            token = caller.set(the_caller)
+            try:
+                res = callback(name, args)
+                if hasattr(res, 'model_dump_json'):
+                    return res.model_dump_json()
+                else:
+                    return json.dumps(res)
+            finally:
+                caller.reset(token)
 
         return self.impl.register_rpc(name, wrapper).block()
 
     def unregister_rpc(self, name: str):
         """Unregisters an RPC endpoint."""
         self.impl.unregister_rpc(name).block()
+
+    @property
+    def user_id(self) -> Optional[str]:
+        """The ID of the current user."""
+        return self.impl.user_id()
+
+    def gen_token(self) -> str:
+        """Generates a token for the current user."""
+        return self.impl.gen_token()
 
     @property
     def root_path(self) -> Path:
@@ -898,12 +919,30 @@ client = Client(_client)
 aclient = client.to_async()
 
 
-def login(name: str, password: str) -> Client:
-    return Client(core.login(name, password).block())
+@overload
+def login(name: str, password: str) -> Client: ...
+@overload
+def login(token: str) -> Client: ...
 
 
-async def alogin(name: str, password: str) -> AsyncClient:
-    return Client(await core.login(name, password).coroutine())
+def login(name, password=None):
+    if password is None:
+        return Client(core.login_by_token(name).block())
+    else:
+        return Client(core.login(name, password).block())
+
+
+@overload
+async def alogin(name: str, password: str) -> AsyncClient: ...
+@overload
+async def alogin(token: str) -> AsyncClient: ...
+
+
+async def alogin(name, password=None):
+    if password is None:
+        return AsyncClient(await core.login_by_token(name).coroutine())
+    else:
+        return AsyncClient(await core.login(name, password).coroutine())
 
 
 __all__ = [
@@ -917,6 +956,7 @@ __all__ = [
     'NoviError',
     'login',
     'alogin',
+    'get_caller',
     'guest_client',
     'client',
     'aclient',

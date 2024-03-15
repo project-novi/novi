@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use uuid::Uuid;
 
 impl From<&PyErr> for PlainError {
     fn from(e: &PyErr) -> Self {
@@ -37,6 +38,7 @@ pub enum Command {
         callback: u64,
         name: String,
         args: String, // json string
+        caller: Option<Uuid>,
     },
 }
 
@@ -78,13 +80,16 @@ impl Execute for Command {
                 callback,
                 name,
                 args,
+                caller,
             } => tokio::task::spawn_blocking(move || {
                 Python::with_gil(|py| {
                     let callback = unsafe { PyObject::from_borrowed_ptr(py, callback as _) };
                     let json = py.import("json")?;
                     // TODO optimize
                     let args = json.getattr("loads")?.call1((args,))?;
-                    let res: String = callback.call1(py, (name, args))?.extract(py)?;
+                    let res: String = callback
+                        .call1(py, (name, caller.map(|it| it.to_string()), args))?
+                        .extract(py)?;
                     Ok(postcard::to_allocvec(&res).unwrap())
                 })
             })

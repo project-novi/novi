@@ -1,4 +1,4 @@
-use crate::{user::GUEST_USER, Session};
+use crate::{session::INTERNAL_SESSION, user::GUEST_USER, Session};
 use serde::Deserialize;
 use std::{process, sync::Arc};
 use uuid::Uuid;
@@ -14,18 +14,27 @@ pub struct PluginInfo {
     #[serde(default)]
     pub keywords: Vec<String>,
     #[serde(default)]
-    pub perms: Vec<String>,
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub itags: Vec<String>,
 
+    #[serde(default)]
+    pub internal: bool,
     #[serde(default)]
     pub disabled: bool,
 }
 impl PluginInfo {
     pub fn new_session(&self) -> Arc<Session> {
+        if self.internal {
+            return INTERNAL_SESSION.clone();
+        }
+
         let session = Session::new(GUEST_USER.clone());
-        session.grant("rpc.register");
-        session.grant("subscribe");
-        for perm in &self.perms {
+        for perm in &self.permissions {
             session.grant(perm);
+        }
+        for itag in &self.itags {
+            session.grant(format!("itag:{itag}"));
         }
         session
     }

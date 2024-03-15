@@ -1,7 +1,5 @@
 use super::{client, Close, Execute, FlattenedObject, IpcSocket};
-use crate::{
-    anyhow, bail, Error, Novi, Object, Result, Session, Tags, TimeRange
-};
+use crate::{anyhow, bail, session, Error, Novi, Object, Result, Session, Tags, TimeRange};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
@@ -78,10 +76,13 @@ pub enum RawCommand {
         callback: u64,
     },
     UnregisterRpc(String),
+    GetUserId,
+    GenToken,
     Login {
         name: String,
         password: String,
     },
+    LoginByToken(String),
 }
 
 pub struct ServerContext {
@@ -226,11 +227,13 @@ impl RawCommand {
                         let socket = Arc::clone(&socket);
                         Box::pin(async move {
                             let args = serde_json::to_string(&args).unwrap();
+                            let caller = session::user_id();
                             let result: String = socket
                                 .invoke(client::Command::CallRpc {
                                     callback,
                                     name: name.to_owned(),
                                     args,
+                                    caller,
                                 })
                                 .await?;
                             Ok(serde_json::from_str(&result).unwrap())
@@ -245,8 +248,16 @@ impl RawCommand {
                 context.rpcs.remove(&name);
                 wrap(())
             }
+            RawCommand::GetUserId => wrap(session::user_id()),
+            RawCommand::GenToken => wrap(session::get().gen_token(&novi)),
             RawCommand::Login { name, password } => {
                 let session = novi.login(&name, &password).await?;
+                let id = Uuid::new_v4();
+                context.sessions.insert(id, session.clone());
+                wrap(id)
+            }
+            RawCommand::LoginByToken(token) => {
+                let session = Session::from_token(&novi, &token).await?;
                 let id = Uuid::new_v4();
                 context.sessions.insert(id, session.clone());
                 wrap(id)
@@ -276,22 +287,23 @@ impl Execute for Command {
 
                 session.enter(self.command.execute(socket)).await
             }
-            None => {
-                match self.command {
-                    RawCommand::Init {
-                        plugin_name,
-                        secret_key,
-                    } => {
-                        let state = socket.context.novi.plugins.get(&plugin_name).unwrap();
-                        if state.secret_key != secret_key {
-                            bail!("invalid secret key");
-                        }
-                        socket.context.sessions.insert(Uuid::nil(), state.info.new_session());
-                        Ok(vec![])
+            None => match self.command {
+                RawCommand::Init {
+                    plugin_name,
+                    secret_key,
+                } => {
+                    let state = socket.context.novi.plugins.get(&plugin_name).unwrap();
+                    if state.secret_key != secret_key {
+                        bail!("invalid secret key");
                     }
-                    cmd => cmd.execute(socket).await,
+                    socket
+                        .context
+                        .sessions
+                        .insert(Uuid::nil(), state.info.new_session());
+                    Ok(vec![])
                 }
-            }
+                cmd => cmd.execute(socket).await,
+            },
         }
     }
 }

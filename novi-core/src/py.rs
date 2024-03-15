@@ -175,6 +175,21 @@ impl Core {
             },
         )
     }
+
+    fn login_by_token(&self, token: String) -> BoxedFuture {
+        let state = self.0.clone();
+        self.0.invoke(
+            None,
+            RawCommand::LoginByToken(token),
+            move |py, id: Uuid| {
+                Ok(ClientImpl {
+                    state,
+                    session: Some(id),
+                }
+                .into_py(py))
+            },
+        )
+    }
 }
 
 #[pyclass(module = "novi")]
@@ -343,6 +358,15 @@ impl ClientImpl {
     fn root_path(&self) -> PyResult<&str> {
         Ok(ROOT_PATH.to_str().unwrap())
     }
+
+    fn user_id(&self) -> PyResult<Option<String>> {
+        block_on(self.state.invoke_raw(self.session, RawCommand::GetUserId))
+            .map(|it: Option<Uuid>| it.map(|it| it.to_string()))
+    }
+
+    fn gen_token(&self) -> PyResult<String> {
+        block_on(self.state.invoke_raw(self.session, RawCommand::GenToken))
+    }
 }
 
 #[pyclass(module = "novi")]
@@ -393,10 +417,13 @@ pub fn init(
     socket: Arc<IpcSocket<client::Command>>,
 ) -> PyResult<()> {
     let core = Core(Arc::new(State::new(socket)));
-    block_on(core.0.invoke_raw::<()>(None, RawCommand::Init {
-        plugin_name: plugin_name.to_owned(),
-        secret_key,
-    }))?;
+    block_on(core.0.invoke_raw::<()>(
+        None,
+        RawCommand::Init {
+            plugin_name: plugin_name.to_owned(),
+            secret_key,
+        },
+    ))?;
 
     let builtins = py.import("builtins")?;
     builtins.setattr(

@@ -19,6 +19,7 @@ mod tag_search;
 pub mod user;
 mod vector;
 
+use aes_gcm::Aes256Gcm;
 pub use client::{EventKind, RpcProvider, Subscriber};
 pub use config::NoviConfig;
 pub use error::{Error, ErrorKind, Result};
@@ -197,6 +198,8 @@ pub struct Novi {
     predict_lock: KeyMutex<Uuid, ()>,
 
     plugins: DashMap<String, PluginState>,
+
+    pub(crate) session_key: aes_gcm::Key<Aes256Gcm>,
 }
 
 impl Novi {
@@ -315,6 +318,8 @@ impl Novi {
             predict_lock: KeyMutex::new(),
 
             plugins: DashMap::new(),
+
+            session_key: Sha256::digest(config.session_key.as_bytes()),
         });
 
         internal_scope::<Result<()>>(async {
@@ -524,14 +529,14 @@ impl Novi {
         tags: impl Iterator<Item = &'a str>,
         edit: bool,
     ) -> Result<()> {
-        let can_modify_internal = session::has_perm("itag.modify");
+        let can_modify_internal = session::has_perm("itag");
 
         for tag in tags {
             validate_tag(tag)?;
 
             if edit {
                 if let Some(name) = tag.strip_prefix('@') {
-                    if !can_modify_internal && !session::has_perm(&format!("itag.modify:{name}")) {
+                    if !can_modify_internal && !session::has_perm(&format!("itag:{name}")) {
                         bail!(@PermissionDenied "can't modify tag {tag:?}");
                     }
                 }
@@ -868,8 +873,6 @@ impl Novi {
         exclude_unrelated: bool,
         mut subscriber: Subscriber,
     ) -> Result<Uuid> {
-        session::check_perm("subscribe")?;
-
         let id = Uuid::new_v4();
         info!(%id, "new subscriber");
         if let Some(ckpt) =
@@ -1009,7 +1012,7 @@ impl Novi {
 }
 
 impl Novi {
-    async fn get_user(&self, id: Uuid) -> Arc<User> {
+    pub async fn get_user(&self, id: Uuid) -> Arc<User> {
         self.user_cache
             .get_with(id, async move {
                 let _guard = self.user_lock.read().await;

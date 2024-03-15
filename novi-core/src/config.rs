@@ -7,6 +7,8 @@ pub struct NoviConfig {
     pub tag_analyze_interval: u64,
 
     pub model_path: PathBuf,
+
+    pub session_key: String,
 }
 
 impl Default for NoviConfig {
@@ -15,6 +17,8 @@ impl Default for NoviConfig {
             tag_analyze_interval: 2 * 60,
 
             model_path: "models".into(),
+
+            session_key: "testkey".to_owned(),
         }
     }
 }

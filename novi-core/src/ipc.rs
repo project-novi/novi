@@ -1,7 +1,7 @@
 pub mod client;
 pub mod server;
 
-use crate::{session::internal_scope, ErrorKind, Result, TagValue};
+use crate::{ErrorKind, Result, TagValue};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::io::{AsyncReadExt, AsyncWriteExt};
@@ -260,10 +260,10 @@ where
                     match msg {
                         Message::Execute(id, e) => {
                             let this = Arc::clone(&this);
-                            tokio::spawn(internal_scope(async move {
+                            tokio::spawn(async move {
                                 let _permit = this.semaphore.acquire().await.unwrap();
                                 this.dispatch(id, e).await;
-                            }));
+                            });
                         }
                         Message::Resp(id, res) => {
                             let tx = this.callbacks.lock().await.remove(id as usize).unwrap();

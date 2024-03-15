@@ -196,6 +196,7 @@ pub enum ErrorKind {
     InvalidObject,
     InvalidOrder,
     InvalidTag,
+    InvalidToken,
 
     UsernameOccupied,
 

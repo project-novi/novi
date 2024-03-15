@@ -14,7 +14,7 @@ use pyo3::{
     prelude::*,
     types::{IntoPyDict, PyDict},
 };
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Serialize};
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
 use tokio::runtime::Handle;
 use tracing::Level;
@@ -103,8 +103,28 @@ impl ObjectImpl {
         .into_py_dict(py)
     }
 
-    fn to_json(&self) -> String {
-        serde_json::to_string(&self.0).unwrap()
+    fn to_simple_json(&self) -> String {
+        #[derive(Serialize)]
+        struct SimpleObject<'a> {
+            id: Uuid,
+            tags: BTreeMap<&'a str, Option<&'a str>>,
+            creator: Option<Uuid>,
+            created: DateTime<Utc>,
+            updated: DateTime<Utc>,
+        }
+        serde_json::to_string(&SimpleObject {
+            id: self.0.id,
+            tags: self
+                .0
+                .tags
+                .iter()
+                .map(|it| (it.0.as_str(), it.1.value.as_deref()))
+                .collect(),
+            creator: self.0.meta.creator,
+            created: self.0.meta.created,
+            updated: self.0.meta.updated,
+        })
+        .unwrap()
     }
 }
 

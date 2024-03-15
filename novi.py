@@ -894,7 +894,7 @@ def move(src: Union[Path, str], dst: Union[Path, str], /):
 
 core = _core
 guest_client = Client(_guest_client)
-client = Client(_internal_client)
+client = Client(_client)
 aclient = client.to_async()
 
 

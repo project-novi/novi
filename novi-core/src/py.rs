@@ -175,20 +175,6 @@ impl Core {
             },
         )
     }
-
-    fn guest_client(&self) -> ClientImpl {
-        ClientImpl {
-            state: self.0.clone(),
-            session: None,
-        }
-    }
-
-    fn internal_client(&self) -> ClientImpl {
-        ClientImpl {
-            state: self.0.clone(),
-            session: Some(Uuid::nil()),
-        }
-    }
 }
 
 #[pyclass(module = "novi")]
@@ -403,17 +389,21 @@ impl LogHandler {
 pub fn init(
     py: Python<'_>,
     plugin_name: &str,
+    secret_key: Uuid,
     socket: Arc<IpcSocket<client::Command>>,
 ) -> PyResult<()> {
     let core = Core(Arc::new(State::new(socket)));
+    block_on(core.0.invoke_raw::<()>(None, RawCommand::Init {
+        plugin_name: plugin_name.to_owned(),
+        secret_key,
+    }))?;
+
     let builtins = py.import("builtins")?;
     builtins.setattr(
-        "_internal_client",
+        "_client",
         ClientImpl {
             state: core.0.clone(),
-            session: Some(block_on(
-                core.0.invoke_raw(None, RawCommand::GetInternalSession),
-            )?),
+            session: Some(Uuid::nil()),
         }
         .into_py(py),
     )?;
@@ -434,7 +424,7 @@ pub fn init(
         &path.display().to_string(),
         "novi",
     )?;
-    builtins.delattr("_internal_client")?;
+    builtins.delattr("_client")?;
     builtins.delattr("_guest_client")?;
     builtins.delattr("_core")?;
 

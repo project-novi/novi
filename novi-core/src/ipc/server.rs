@@ -1,6 +1,6 @@
 use super::{client, Close, Execute, FlattenedObject, IpcSocket};
 use crate::{
-    anyhow, session::INTERNAL_SESSION, Error, Novi, Object, Result, Session, Tags, TimeRange,
+    anyhow, bail, Error, Novi, Object, Result, Session, Tags, TimeRange
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -22,17 +22,12 @@ pub async fn wait_terminate(pid: u32) {
 }
 
 pub fn new_socket(novi: Arc<Novi>, stream: ipc::LocalSocketStream) -> Arc<IpcSocket<Command>> {
-    let sessions = DashMap::new();
-    let internal_session = Uuid::new_v4();
-    sessions.insert(internal_session, INTERNAL_SESSION.clone());
-
     let context = ServerContext {
         novi,
         pid: stream.peer_pid().unwrap(),
         subs: DashSet::new(),
         rpcs: DashSet::new(),
-        sessions,
-        internal_session,
+        sessions: DashMap::new(),
     };
     IpcSocket::new(stream, context, 128, "server".to_owned())
 }
@@ -44,6 +39,10 @@ pub struct Command {
 }
 #[derive(Serialize, Deserialize)]
 pub enum RawCommand {
+    Init {
+        plugin_name: String,
+        secret_key: Uuid,
+    },
     AddObject(Tags),
     GetObject(Uuid),
     SetObjectTags {
@@ -79,7 +78,6 @@ pub enum RawCommand {
         callback: u64,
     },
     UnregisterRpc(String),
-    GetInternalSession,
     Login {
         name: String,
         password: String,
@@ -92,7 +90,6 @@ pub struct ServerContext {
     subs: DashSet<Uuid>,
     rpcs: DashSet<String>,
     sessions: DashMap<Uuid, Arc<Session>>,
-    internal_session: Uuid,
 }
 #[async_trait]
 impl Close for ServerContext {
@@ -121,6 +118,9 @@ impl RawCommand {
             postcard::to_allocvec(&value).unwrap()
         }
         Ok(match self {
+            RawCommand::Init { .. } => {
+                unreachable!()
+            }
             RawCommand::AddObject(tags) => {
                 wrap(novi.add_object(tags).await.map(FlattenedObject::from)?)
             }
@@ -245,7 +245,6 @@ impl RawCommand {
                 context.rpcs.remove(&name);
                 wrap(())
             }
-            RawCommand::GetInternalSession => wrap(context.internal_session),
             RawCommand::Login { name, password } => {
                 let session = novi.login(&name, &password).await?;
                 let id = Uuid::new_v4();
@@ -277,7 +276,22 @@ impl Execute for Command {
 
                 session.enter(self.command.execute(socket)).await
             }
-            None => self.command.execute(socket).await,
+            None => {
+                match self.command {
+                    RawCommand::Init {
+                        plugin_name,
+                        secret_key,
+                    } => {
+                        let state = socket.context.novi.plugins.get(&plugin_name).unwrap();
+                        if state.secret_key != secret_key {
+                            bail!("invalid secret key");
+                        }
+                        socket.context.sessions.insert(Uuid::nil(), state.info.new_session());
+                        Ok(vec![])
+                    }
+                    cmd => cmd.execute(socket).await,
+                }
+            }
         }
     }
 }

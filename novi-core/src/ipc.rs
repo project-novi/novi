@@ -317,6 +317,7 @@ where
 
 pub async fn sub_main() {
     let plugin_dir_name = std::env::args().nth(2).unwrap();
+    let secret_key: Uuid = std::env::args().nth(3).unwrap().parse().unwrap();
 
     let stream = tokio_ipc::LocalSocketStream::connect("@novi")
         .await
@@ -333,7 +334,7 @@ pub async fn sub_main() {
             .getattr("path")?
             .call_method1("append", ("..",))?;
 
-        crate::py::init(py, &plugin_dir_name, socket)?;
+        crate::py::init(py, &plugin_dir_name, secret_key, socket)?;
 
         let runpy = py.import("runpy")?;
         runpy.getattr("run_module")?.call(

@@ -21,6 +21,10 @@ impl Session {
         })
     }
 
+    pub(crate) fn grant(&self, perm: impl Into<String>) {
+        self.granted.insert(perm.into());
+    }
+
     pub async fn enter<R>(self: Arc<Self>, f: impl Future<Output = R>) -> R {
         SESSION.scope(self, f).await
     }

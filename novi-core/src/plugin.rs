@@ -1,5 +1,7 @@
+use crate::{user::GUEST_USER, Session};
 use serde::Deserialize;
-use std::{path::PathBuf, process};
+use std::{process, sync::Arc};
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct PluginInfo {
@@ -12,14 +14,25 @@ pub struct PluginInfo {
     #[serde(default)]
     pub keywords: Vec<String>,
     #[serde(default)]
-    pub namespaces: Vec<String>,
+    pub perms: Vec<String>,
 
     #[serde(default)]
     pub disabled: bool,
 }
+impl PluginInfo {
+    pub fn new_session(&self) -> Arc<Session> {
+        let session = Session::new(GUEST_USER.clone());
+        session.grant("rpc.register");
+        session.grant("subscribe");
+        for perm in &self.perms {
+            session.grant(perm);
+        }
+        session
+    }
+}
 
 pub(crate) struct PluginState {
+    pub secret_key: Uuid,
     pub info: PluginInfo,
-    pub path: PathBuf,
     pub process: process::Child,
 }

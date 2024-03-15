@@ -393,17 +393,21 @@ impl Novi {
         if info.disabled {
             return Ok(None);
         }
+
+        let secret_key = Uuid::new_v4();
         let process = std::process::Command::new(std::env::current_exe()?)
             .arg("--plugin-host")
-            .arg(&info.name)
+            .arg(name)
+            .arg(secret_key.to_string())
             .env("WORKER_THREADS", "3")
             .current_dir(&path)
             .spawn()
             .with_context(|| format!("failed to load plugin {:?}", info.name))?;
         info!(name = info.name, "plugin loaded");
+
         Ok(Some(PluginState {
+            secret_key,
             info,
-            path,
             process,
         }))
     }
@@ -520,20 +524,18 @@ impl Novi {
         tags: impl Iterator<Item = &'a str>,
         edit: bool,
     ) -> Result<()> {
-        let can_modify_internal = session::has_perm("novi.tag.internal:modify");
+        let can_modify_internal = session::has_perm("itag.modify");
 
         for tag in tags {
+            validate_tag(tag)?;
+
             if edit {
                 if let Some(name) = tag.strip_prefix('@') {
-                    if !can_modify_internal
-                        && !session::has_perm(&format!("novi.itag.modify:{name}"))
-                    {
+                    if !can_modify_internal && !session::has_perm(&format!("itag.modify:{name}")) {
                         bail!(@PermissionDenied "can't modify tag {tag:?}");
                     }
                 }
             }
-
-            validate_tag(tag)?;
         }
         Ok(())
     }
@@ -619,7 +621,7 @@ impl Novi {
         tags: Tags,
         rule_set: Option<&RuleSet>,
     ) -> Result<Arc<Object>> {
-        session::check_perm("novi.object.create")?;
+        session::check_perm("object.create")?;
 
         self.validate_tags(tags.keys().map(|it| it.as_str()), true)
             .await?;
@@ -866,6 +868,8 @@ impl Novi {
         exclude_unrelated: bool,
         mut subscriber: Subscriber,
     ) -> Result<Uuid> {
+        session::check_perm("subscribe")?;
+
         let id = Uuid::new_v4();
         info!(%id, "new subscriber");
         if let Some(ckpt) =
@@ -912,7 +916,7 @@ impl Novi {
 
 impl Novi {
     async fn apply_rules_inner(&self, rule_set: &RuleSet, rules: &[Rule]) -> Result<()> {
-        session::check_perm("novi.rule.modify")?;
+        session::check_perm("rule.modify")?;
 
         let mut q = query_unsatisfied(&rules);
         q.add_select("*");
@@ -942,7 +946,7 @@ impl Novi {
     }
 
     pub async fn add_rules(&self, s: &str, apply_old: bool) -> Result<Arc<Object>> {
-        session::check_perm("novi.rule.modify")?;
+        session::check_perm("rule.modify")?;
 
         let rules = parse_rules(s)?;
         info!(?rules, "add rules");
@@ -968,7 +972,7 @@ impl Novi {
     }
 
     pub async fn delete_rule(&self, id: Uuid) -> Result<()> {
-        session::check_perm("novi.rule.modify")?;
+        session::check_perm("rule.modify")?;
 
         let mut rule_set = self.rule_set.write().await;
 
@@ -981,7 +985,7 @@ impl Novi {
     }
 
     pub async fn get_rules(&self) -> Result<BTreeMap<Uuid, String>> {
-        session::check_perm("novi.rule.list")?;
+        session::check_perm("rule.list")?;
 
         Ok(self
             .query(
@@ -1120,7 +1124,7 @@ impl Novi {
             return Ok(Arc::clone(tag));
         }
 
-        session::check_perm("novi.object.create")?;
+        session::check_perm("object.create")?;
 
         let id = internal_scope(self.add_model(&Tag::new(tag.to_owned())))
             .await?
@@ -1194,7 +1198,7 @@ impl Novi {
     }
 
     pub fn register_rpc(&self, name: &str, provider: RpcProvider) -> Result<()> {
-        session::check_perm("novi.rpc.register")?;
+        session::check_perm("rpc.register")?;
 
         info!(name, "register rpc");
         if let dashmap::mapref::entry::Entry::Vacant(vacant) =
@@ -1208,7 +1212,7 @@ impl Novi {
     }
 
     pub fn unregister_rpc(&self, name: &str) -> Result<()> {
-        session::check_perm("novi.rpc.register")?;
+        session::check_perm("rpc.register")?;
 
         if self
             .rpc_providers

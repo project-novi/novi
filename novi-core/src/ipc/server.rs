@@ -116,6 +116,10 @@ impl ServerContext {
             .map(|it| it.clone())
             .ok_or_else(|| anyhow!(@InvalidCredentials "invalid user"))
     }
+
+    fn add_session(&self, session: Arc<Session>) -> u32 {
+        self.sessions.write().unwrap().insert(session)
+    }
 }
 #[async_trait]
 impl Close for ServerContext {
@@ -250,15 +254,15 @@ impl RawCommand {
                     Arc::new(move |name, args| {
                         let name = name.to_owned();
                         let socket = Arc::clone(&socket);
+                        let session = socket.context.add_session(session::current());
                         Box::pin(async move {
                             let args = serde_json::to_string(&args).unwrap();
-                            let caller = session::user_id();
                             let result: String = socket
                                 .invoke(client::Command::CallRpc {
                                     callback,
                                     name: name.to_owned(),
                                     args,
-                                    caller,
+                                    session,
                                 })
                                 .await?;
                             Ok(serde_json::from_str(&result).unwrap())
@@ -290,7 +294,7 @@ impl RawCommand {
                 } else {
                     Session::new(user)
                 };
-                wrap(context.sessions.write().unwrap().insert(session))
+                wrap(context.add_session(session))
             }
             RawCommand::GetCurrentUser => {
                 wrap(context.users.write().unwrap().insert(session::user()))

@@ -37,6 +37,11 @@ task_local! {
     static SESSION: Arc<Session>;
 }
 
+pub fn current() -> Arc<Session> {
+    SESSION
+        .try_with(|it| it.clone())
+        .unwrap_or_else(|_| Session::new(GUEST_USER.clone()))
+}
 pub fn user() -> Arc<User> {
     SESSION
         .try_with(|it| it.user.clone())

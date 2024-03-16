@@ -53,6 +53,19 @@ def copy_docstring(from_func):
     return decorator
 
 
+class SessionContext:
+    def __init__(self, impl, id):
+        self.impl = impl
+        self.id = id
+
+    def __enter__(self):
+        self.token = session.set(self.id)
+
+    def __exit__(self, *args):
+        session.reset(self.token)
+        self.impl.close_session(self.id)
+
+
 class NoviError(Exception):
     """Error type in Novi.
 
@@ -92,13 +105,6 @@ class BoxedFuture(Protocol, Generic[T]):
     def block(self) -> T: ...
 
     async def coroutine(self) -> T: ...
-
-
-caller = ContextVar('caller', default=None)
-
-
-def get_caller() -> Optional[str]:
-    return caller.get()
 
 
 class BaseClient:
@@ -220,16 +226,16 @@ class BaseClient:
                 Should have a signature of `(name: str, args: RpcArgs) -> Any`.
         """
 
-        def wrapper(name: str, the_caller: Optional[str], args: RpcArgs):
-            token = caller.set(the_caller)
-            try:
+        impl = self.impl
+
+        def wrapper(name: str, session: int, args: RpcArgs):
+            with SessionContext(impl, session):
                 res = callback(name, args)
-                if hasattr(res, 'model_dump_json'):
-                    return res.model_dump_json()
-                else:
-                    return json.dumps(res)
-            finally:
-                caller.reset(token)
+
+            if hasattr(res, 'model_dump_json'):
+                return res.model_dump_json()
+            else:
+                return json.dumps(res)
 
         return self.impl.register_rpc(name, wrapper).block()
 
@@ -384,22 +390,10 @@ class BaseClient:
         >>>     ...
         """
 
-        class Context:
-            def __init__(self, impl, id):
-                self.impl = impl
-                self.id = id
-
-            def __enter__(self):
-                self.token = session.set(self.id)
-
-            def __exit__(self, *args):
-                session.reset(self.token)
-                self.impl.close_session(self.id)
-
         if user is None:
             user = guest_user
 
-        return Context(self.impl, self.impl.new_session(user.impl, inherit))
+        return SessionContext(self.impl, self.impl.new_session(user.impl, inherit))
 
 
 class Client(BaseClient):
@@ -1011,7 +1005,6 @@ __all__ = [
     'RpcArgs',
     'NoviError',
     'login',
-    'get_caller',
     'plugin_user',
     'guest_user',
     'client',

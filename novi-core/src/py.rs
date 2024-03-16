@@ -406,6 +406,17 @@ impl ClientImpl {
     fn root_path(&self) -> PyResult<&str> {
         Ok(ROOT_PATH.to_str().unwrap())
     }
+
+    fn has_permission(&self, permission: String) -> PyResult<bool> {
+        block_on(self.0.invoke_raw(RawCommand::HasPermission(permission)))
+    }
+
+    fn check_permission(&self, permission: String) -> PyResult<()> {
+        block_on(
+            self.0
+                .invoke_raw::<()>(RawCommand::CheckPermission(permission)),
+        )
+    }
 }
 
 #[pyclass(module = "novi")]

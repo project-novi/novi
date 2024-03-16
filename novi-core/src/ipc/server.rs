@@ -97,6 +97,8 @@ pub enum RawCommand {
     GetCurrentUser,
     CloseSession(u32),
     CloseUser(u32),
+    HasPermission(String),
+    CheckPermission(String),
 }
 
 pub struct ServerContext {
@@ -307,6 +309,8 @@ impl RawCommand {
                 context.users.write().unwrap().remove(id);
                 wrap(())
             }
+            RawCommand::HasPermission(perm) => wrap(session::has_perm(&perm)),
+            RawCommand::CheckPermission(perm) => wrap(session::check_perm(&perm)?),
         })
     }
 }

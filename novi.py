@@ -395,6 +395,14 @@ class BaseClient:
 
         return SessionContext(self.impl, self.impl.new_session(user.impl, inherit))
 
+    def has_permission(self, permission: str) -> bool:
+        """Checks if the current user has a permission."""
+        return self.impl.has_permission(permission)
+
+    def check_permission(self, permission: str):
+        """Raises an error if the current user does not have a permission."""
+        self.impl.check_permission(permission)
+
 
 class Client(BaseClient):
     """The client containing the main API for Novi.

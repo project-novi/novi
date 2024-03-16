@@ -1,12 +1,18 @@
-use super::{client, Close, Execute, FlattenedObject, IpcSocket};
-use crate::{anyhow, bail, session, Error, Novi, Object, Result, Session, Tags, TimeRange};
+use super::{client, Arena, Close, Execute, FlattenedObject, IpcSocket};
+use crate::{
+    anyhow, bail, session, user::GUEST_USER, Error, Novi, Object, Result, Session, Tags, TimeRange,
+    User,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::{DashMap, DashSet};
 use interprocess::local_socket::tokio as ipc;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 use tokio::{runtime::Handle, sync::Notify};
 use tracing::warn;
 use uuid::Uuid;
@@ -25,14 +31,15 @@ pub fn new_socket(novi: Arc<Novi>, stream: ipc::LocalSocketStream) -> Arc<IpcSoc
         pid: stream.peer_pid().unwrap(),
         subs: DashSet::new(),
         rpcs: DashSet::new(),
-        sessions: DashMap::new(),
+        users: RwLock::new(Arena::new()),
+        sessions: RwLock::new(Arena::new()),
     };
     IpcSocket::new(stream, context, 128, "server".to_owned())
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Command {
-    pub session: Option<Uuid>,
+    pub session: u32,
     pub command: RawCommand,
 }
 #[derive(Serialize, Deserialize)]
@@ -76,13 +83,20 @@ pub enum RawCommand {
         callback: u64,
     },
     UnregisterRpc(String),
-    GetUserId,
-    GenToken,
+    GetUserId(u32),
+    GenToken(u32),
     Login {
         name: String,
         password: String,
     },
     LoginByToken(String),
+    NewSession {
+        user: u32,
+        inherit: bool,
+    },
+    GetCurrentUser,
+    CloseSession(u32),
+    CloseUser(u32),
 }
 
 pub struct ServerContext {
@@ -90,7 +104,18 @@ pub struct ServerContext {
     pid: u32,
     subs: DashSet<Uuid>,
     rpcs: DashSet<String>,
-    sessions: DashMap<Uuid, Arc<Session>>,
+    users: RwLock<Arena<Arc<User>>>,
+    sessions: RwLock<Arena<Arc<Session>>>,
+}
+impl ServerContext {
+    fn get_user(&self, id: u32) -> Result<Arc<User>> {
+        self.users
+            .read()
+            .unwrap()
+            .get(id as _)
+            .map(|it| it.clone())
+            .ok_or_else(|| anyhow!(@InvalidCredentials "invalid user"))
+    }
 }
 #[async_trait]
 impl Close for ServerContext {
@@ -248,19 +273,35 @@ impl RawCommand {
                 context.rpcs.remove(&name);
                 wrap(())
             }
-            RawCommand::GetUserId => wrap(session::user_id()),
-            RawCommand::GenToken => wrap(session::get().gen_token(&novi)),
+            RawCommand::GetUserId(id) => wrap(context.get_user(id)?.id),
+            RawCommand::GenToken(id) => wrap(context.get_user(id)?.gen_token(novi)),
             RawCommand::Login { name, password } => {
-                let session = novi.login(&name, &password).await?;
-                let id = Uuid::new_v4();
-                context.sessions.insert(id, session.clone());
-                wrap(id)
+                let user = novi.login(&name, &password).await?;
+                wrap(context.users.write().unwrap().insert(user))
             }
             RawCommand::LoginByToken(token) => {
-                let session = Session::from_token(&novi, &token).await?;
-                let id = Uuid::new_v4();
-                context.sessions.insert(id, session.clone());
-                wrap(id)
+                let user = User::from_token(&novi, &token).await?;
+                wrap(context.users.write().unwrap().insert(user))
+            }
+            RawCommand::NewSession { user, inherit } => {
+                let user = context.get_user(user)?;
+                let session = if inherit {
+                    Session::inherit(user)
+                } else {
+                    Session::new(user)
+                };
+                wrap(context.sessions.write().unwrap().insert(session))
+            }
+            RawCommand::GetCurrentUser => {
+                wrap(context.users.write().unwrap().insert(session::user()))
+            }
+            RawCommand::CloseSession(id) => {
+                context.sessions.write().unwrap().remove(id);
+                wrap(())
+            }
+            RawCommand::CloseUser(id) => {
+                context.users.write().unwrap().remove(id);
+                wrap(())
             }
         })
     }
@@ -276,34 +317,44 @@ impl Execute for Command {
     }
 
     async fn execute(self, socket: &Arc<IpcSocket<Self>>) -> Result<Vec<u8>, Self::Error> {
-        match self.session {
-            Some(id) => {
+        match self.command {
+            RawCommand::Init {
+                plugin_name,
+                secret_key,
+            } => {
+                let state = socket.context.novi.plugins.get(&plugin_name).unwrap();
+                if state.secret_key != secret_key {
+                    bail!("invalid secret key");
+                }
+                let user = state.info.new_user();
+                let user_id = socket.context.users.write().unwrap().insert(user.clone());
+                let guest_user_id = socket
+                    .context
+                    .users
+                    .write()
+                    .unwrap()
+                    .insert(GUEST_USER.clone());
+                let session_id = socket
+                    .context
+                    .sessions
+                    .write()
+                    .unwrap()
+                    .insert(Session::new(user));
+
+                Ok(postcard::to_allocvec(&(user_id, guest_user_id, session_id)).unwrap())
+            }
+            cmd => {
                 let session = socket
                     .context
                     .sessions
-                    .get(&id)
+                    .read()
+                    .unwrap()
+                    .get(self.session)
                     .map(|it| it.clone())
                     .ok_or_else(|| anyhow!("invalid session"))?;
 
-                session.enter(self.command.execute(socket)).await
+                session::scope(session, cmd.execute(socket)).await
             }
-            None => match self.command {
-                RawCommand::Init {
-                    plugin_name,
-                    secret_key,
-                } => {
-                    let state = socket.context.novi.plugins.get(&plugin_name).unwrap();
-                    if state.secret_key != secret_key {
-                        bail!("invalid secret key");
-                    }
-                    socket
-                        .context
-                        .sessions
-                        .insert(Uuid::nil(), state.info.new_session());
-                    Ok(vec![])
-                }
-                cmd => cmd.execute(socket).await,
-            },
         }
     }
 }

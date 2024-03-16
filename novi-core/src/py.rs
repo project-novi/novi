@@ -152,21 +152,36 @@ impl State {
         }
     }
 
-    async fn invoke_raw<T: Send + DeserializeOwned>(
+    fn get_session() -> u32 {
+        Python::with_gil(|py| {
+            py.import("novi")?
+                .getattr("session")?
+                .call_method0("get")?
+                .extract::<u32>()
+        })
+        .unwrap_or_default()
+    }
+
+    async fn invoke_direct<T: Send + DeserializeOwned>(
         &self,
-        session: Option<Uuid>,
+        session: u32,
         command: RawCommand,
     ) -> PyResult<T> {
         let socket = self.socket.clone();
         socket.invoke(Command { session, command }).await
     }
 
+    #[inline]
+    async fn invoke_raw<T: Send + DeserializeOwned>(&self, command: RawCommand) -> PyResult<T> {
+        self.invoke_direct(Self::get_session(), command).await
+    }
+
     fn invoke<T: Send + DeserializeOwned + 'static>(
         &self,
-        session: Option<Uuid>,
         command: RawCommand,
         mapper: impl FnOnce(Python, T) -> PyResult<PyObject> + Send + 'static,
     ) -> BoxedFuture {
+        let session = Self::get_session();
         let socket = self.socket.clone();
         BoxedFuture(Some(Box::pin(async move {
             socket
@@ -178,57 +193,32 @@ impl State {
 }
 
 #[pyclass(module = "novi")]
-struct Core(Arc<State>);
+struct UserImpl {
+    state: Arc<State>,
+    id: u32,
+}
 #[pymethods]
-impl Core {
-    fn login(&self, name: String, password: String) -> BoxedFuture {
-        let state = self.0.clone();
-        self.0.invoke(
-            None,
-            RawCommand::Login { name, password },
-            move |py, id: Uuid| {
-                Ok(ClientImpl {
-                    state,
-                    session: Some(id),
-                }
-                .into_py(py))
-            },
-        )
+impl UserImpl {
+    fn id(&self) -> PyResult<Option<String>> {
+        block_on(self.state.invoke_raw(RawCommand::GetUserId(self.id)))
+            .map(|it: Option<Uuid>| it.map(|it| it.to_string()))
     }
 
-    fn login_by_token(&self, token: String) -> BoxedFuture {
-        let state = self.0.clone();
-        self.0.invoke(
-            None,
-            RawCommand::LoginByToken(token),
-            move |py, id: Uuid| {
-                Ok(ClientImpl {
-                    state,
-                    session: Some(id),
-                }
-                .into_py(py))
-            },
-        )
+    fn gen_token(&self) -> PyResult<String> {
+        block_on(self.state.invoke_raw(RawCommand::GenToken(self.id)))
+    }
+}
+impl Drop for UserImpl {
+    fn drop(&mut self) {
+        block_on(self.state.invoke_raw::<()>(RawCommand::CloseUser(self.id))).unwrap();
     }
 }
 
 #[pyclass(module = "novi")]
-struct ClientImpl {
-    state: Arc<State>,
-    session: Option<Uuid>,
-}
+struct ClientImpl(Arc<State>);
 impl ClientImpl {
-    #[inline]
-    fn invoke<T: Send + DeserializeOwned + 'static>(
-        &self,
-        command: RawCommand,
-        mapper: impl FnOnce(Python, T) -> PyResult<PyObject> + Send + 'static,
-    ) -> BoxedFuture {
-        self.state.invoke(self.session, command, mapper)
-    }
-
     fn invoke_return_object(&self, command: RawCommand) -> BoxedFuture {
-        self.invoke(command, |py, obj: FlattenedObject| {
+        self.0.invoke(command, |py, obj: FlattenedObject| {
             Ok(ObjectImpl::from_flattened(obj).into_py(py))
         })
     }
@@ -258,7 +248,8 @@ impl ClientImpl {
     }
 
     fn delete_object(&self, id: PyUuid) -> BoxedFuture {
-        self.invoke(RawCommand::DeleteObject(id.0), |py, _: ()| Ok(py.None()))
+        self.0
+            .invoke(RawCommand::DeleteObject(id.0), |py, _: ()| Ok(py.None()))
     }
 
     #[pyo3(signature = (filter, checkpoint, updated_after, updated_before, created_after, created_before, order, limit))]
@@ -273,7 +264,7 @@ impl ClientImpl {
         order: &str,
         limit: Option<u32>,
     ) -> PyResult<BoxedFuture> {
-        Ok(self.invoke(
+        Ok(self.0.invoke(
             RawCommand::Query {
                 filter: filter.to_owned(),
                 checkpoint,
@@ -301,8 +292,8 @@ impl ClientImpl {
         with_history: bool,
         exclude_unrelated: bool,
     ) -> BoxedFuture {
-        let state = self.state.clone();
-        self.invoke(
+        let state = self.0.clone();
+        self.0.invoke(
             RawCommand::Subscribe {
                 filter: filter.to_owned(),
                 callback: callback.as_ptr() as _,
@@ -318,11 +309,12 @@ impl ClientImpl {
     }
 
     fn unsubscribe(&self, id: PyUuid) -> BoxedFuture {
-        let state = self.state.clone();
-        self.invoke(RawCommand::Unsubscribe(id.0), move |py, _: ()| {
-            state.subscribe_callbacks.remove(&id.0);
-            Ok(py.None())
-        })
+        let state = self.0.clone();
+        self.0
+            .invoke(RawCommand::Unsubscribe(id.0), move |py, _: ()| {
+                state.subscribe_callbacks.remove(&id.0);
+                Ok(py.None())
+            })
     }
 
     fn call<'py>(
@@ -338,7 +330,7 @@ impl ClientImpl {
             .getattr("dumps")?
             .call1((args,))?
             .extract()?;
-        Ok(self.invoke(
+        Ok(self.0.invoke(
             RawCommand::Call {
                 name: name.to_owned(),
                 args,
@@ -354,8 +346,8 @@ impl ClientImpl {
     }
 
     fn register_rpc(&self, name: String, callback: PyObject) -> BoxedFuture {
-        let state = self.state.clone();
-        self.invoke(
+        let state = self.0.clone();
+        self.0.invoke(
             RawCommand::RegisterRpc {
                 name: name.clone(),
                 callback: callback.as_ptr() as _,
@@ -368,24 +360,51 @@ impl ClientImpl {
     }
 
     fn unregister_rpc(&self, name: String) -> BoxedFuture {
-        let state = self.state.clone();
-        self.invoke(RawCommand::UnregisterRpc(name.clone()), move |py, _: ()| {
-            state.rpc_callbacks.remove(&name);
-            Ok(py.None())
+        let state = self.0.clone();
+        self.0
+            .invoke(RawCommand::UnregisterRpc(name.clone()), move |py, _: ()| {
+                state.rpc_callbacks.remove(&name);
+                Ok(py.None())
+            })
+    }
+
+    fn login(&self, name: String, password: String) -> BoxedFuture {
+        let state = self.0.clone();
+        self.0
+            .invoke(RawCommand::Login { name, password }, |py, user: u32| {
+                Ok(UserImpl { state, id: user }.into_py(py))
+            })
+    }
+
+    fn login_by_token(&self, token: String) -> BoxedFuture {
+        let state = self.0.clone();
+        self.0
+            .invoke(RawCommand::LoginByToken(token), |py, user: u32| {
+                Ok(UserImpl { state, id: user }.into_py(py))
+            })
+    }
+
+    fn current_user(&self) -> PyResult<UserImpl> {
+        let user: u32 = block_on(self.0.invoke_raw(RawCommand::GetCurrentUser))?;
+        Ok(UserImpl {
+            state: self.0.clone(),
+            id: user,
         })
+    }
+
+    fn new_session(&self, user: PyRef<UserImpl>, inherit: bool) -> PyResult<u32> {
+        block_on(self.0.invoke_raw(RawCommand::NewSession {
+            user: user.id,
+            inherit,
+        }))
+    }
+
+    fn close_session(&self, id: u32) -> PyResult<()> {
+        block_on(self.0.invoke_raw::<()>(RawCommand::CloseSession(id)))
     }
 
     fn root_path(&self) -> PyResult<&str> {
         Ok(ROOT_PATH.to_str().unwrap())
-    }
-
-    fn user_id(&self) -> PyResult<Option<String>> {
-        block_on(self.state.invoke_raw(self.session, RawCommand::GetUserId))
-            .map(|it: Option<Uuid>| it.map(|it| it.to_string()))
-    }
-
-    fn gen_token(&self) -> PyResult<String> {
-        block_on(self.state.invoke_raw(self.session, RawCommand::GenToken))
     }
 }
 
@@ -436,9 +455,9 @@ pub fn init(
     secret_key: Uuid,
     socket: Arc<IpcSocket<client::Command>>,
 ) -> PyResult<()> {
-    let core = Core(Arc::new(State::new(socket)));
-    block_on(core.0.invoke_raw::<()>(
-        None,
+    let client = ClientImpl(Arc::new(State::new(socket)));
+    let (user_id, guest_user_id, session_id): (u32, u32, u32) = block_on(client.0.invoke_direct(
+        0,
         RawCommand::Init {
             plugin_name: plugin_name.to_owned(),
             secret_key,
@@ -447,22 +466,23 @@ pub fn init(
 
     let builtins = py.import("builtins")?;
     builtins.setattr(
-        "_client",
-        ClientImpl {
-            state: core.0.clone(),
-            session: Some(Uuid::nil()),
+        "_plugin_user",
+        UserImpl {
+            state: client.0.clone(),
+            id: user_id,
         }
         .into_py(py),
     )?;
     builtins.setattr(
-        "_guest_client",
-        ClientImpl {
-            state: core.0.clone(),
-            session: None,
+        "_guest_user",
+        UserImpl {
+            state: client.0.clone(),
+            id: guest_user_id,
         }
         .into_py(py),
     )?;
-    builtins.setattr("_core", core.into_py(py))?;
+    builtins.setattr("_session", session_id)?;
+    builtins.setattr("_client", client.into_py(py))?;
 
     let path = ROOT_PATH.join("novi.py");
     let m = PyModule::from_code(
@@ -471,9 +491,10 @@ pub fn init(
         &path.display().to_string(),
         "novi",
     )?;
+    builtins.delattr("_plugin_user")?;
+    builtins.delattr("_guest_user")?;
+    builtins.delattr("_session")?;
     builtins.delattr("_client")?;
-    builtins.delattr("_guest_client")?;
-    builtins.delattr("_core")?;
 
     py.run(
         r#"

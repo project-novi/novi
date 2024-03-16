@@ -176,7 +176,7 @@ enum Message<E> {
 
 struct Arena<T> {
     slots: Vec<Option<T>>,
-    free: Vec<usize>,
+    free: Vec<u32>,
     count: u32,
 }
 impl<T> Arena<T> {
@@ -188,20 +188,24 @@ impl<T> Arena<T> {
         }
     }
 
-    fn insert(&mut self, value: T) -> usize {
+    fn insert(&mut self, value: T) -> u32 {
         self.count += 1;
         if let Some(i) = self.free.pop() {
-            self.slots[i] = Some(value);
+            self.slots[i as usize] = Some(value);
             i
         } else {
             self.slots.push(Some(value));
-            self.slots.len() - 1
+            self.slots.len() as u32 - 1
         }
     }
 
-    fn remove(&mut self, i: usize) -> Option<T> {
+    fn get(&self, i: u32) -> Option<&T> {
+        self.slots[i as usize].as_ref()
+    }
+
+    fn remove(&mut self, i: u32) -> Option<T> {
         self.count -= 1;
-        let res = self.slots[i].take();
+        let res = self.slots[i as usize].take();
         self.free.push(i);
         res
     }
@@ -266,7 +270,7 @@ where
                             });
                         }
                         Message::Resp(id, res) => {
-                            let tx = this.callbacks.lock().await.remove(id as usize).unwrap();
+                            let tx = this.callbacks.lock().await.remove(id).unwrap();
                             tx.send(res).unwrap();
                         }
                     }
@@ -296,7 +300,7 @@ where
         req: Req,
     ) -> Result<R, E::Error> {
         let (tx, rx) = oneshot::channel();
-        let id = self.callbacks.lock().await.insert(tx) as u32;
+        let id = self.callbacks.lock().await.insert(tx);
         let buf = postcard::to_allocvec(&Message::Execute(id, req)).unwrap();
 
         async {

@@ -1027,7 +1027,7 @@ impl Novi {
             .await
     }
 
-    pub async fn login(&self, name: &str, password: &str) -> Result<Arc<Session>> {
+    pub async fn login(&self, name: &str, password: &str) -> Result<Arc<User>> {
         let id = sqlx::query_scalar!(
             "select id from object where tags->'@user.name'->>'v' = $1",
             name
@@ -1037,13 +1037,12 @@ impl Novi {
         .ok_or_else(|| anyhow!(@InvalidCredentials))?;
         let user = self.get_user(id).await;
         user.verify(password)?;
-
-        Ok(Session::new(user))
+        Ok(user)
     }
 
     pub async fn with_user<R>(&self, id: Uuid, f: impl Future<Output = R>) -> R {
         let user = self.get_user(id).await;
-        Session::new(user).enter(f).await
+        session::enter(user, f).await
     }
 
     pub async fn register(&self, name: &str, password: &str) -> Result<Uuid> {

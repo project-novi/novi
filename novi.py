@@ -367,6 +367,40 @@ class BaseClient:
 
         return decorator
 
+    def current_user(self) -> 'User':
+        return User(self.impl.current_user())
+
+    def context(self, user: Optional['User'] = None, inherit: bool = True):
+        """Creates a new context.
+
+        Args:
+            user: The user to be used in the context. Default is `guest_user`.
+            inherit:
+                When set to True, the permissions from the current session
+                will be inherited. Default is True.
+
+        Examples:
+        >>> with client.context(user):
+        >>>     ...
+        """
+
+        class Context:
+            def __init__(self, impl, id):
+                self.impl = impl
+                self.id = id
+
+            def __enter__(self):
+                self.token = session.set(self.id)
+
+            def __exit__(self, *args):
+                session.reset(self.token)
+                self.impl.close_session(self.id)
+
+        if user is None:
+            user = guest_user
+
+        return Context(self.impl, self.impl.new_session(user.impl, inherit))
+
 
 class Client(BaseClient):
     """The client containing the main API for Novi.
@@ -590,6 +624,25 @@ class Client(BaseClient):
 
         return self.impl.call(name, args, timeout).block()
 
+    @overload
+    def login(self, username: str, password: str) -> 'User': ...
+    @overload
+    def login(self, token: str) -> 'User': ...
+
+    def login(self, username, password=None):
+        """
+        Logs in as a user.
+
+        Examples:
+        >>> client.login('user1', 'password')
+        >>> client.login('token')
+        """
+
+        if password is None:
+            return User(self.impl.login_by_token(username).block())
+
+        return User(self.impl.login(username, password).block())
+
 
 class AsyncClient(BaseClient):
     """The async version of `Client`.
@@ -709,6 +762,18 @@ class AsyncClient(BaseClient):
     ) -> Any:
         return await self.impl.call(name, args, timeout).coroutine()
 
+    @overload
+    async def login(self, username: str, password: str) -> 'User': ...
+    @overload
+    async def login(self, token: str) -> 'User': ...
+
+    @copy_docstring(Client.login)
+    async def login(self, username, password=None):
+        if password is None:
+            return User(await self.impl.login_by_token(username).coroutine())
+
+        return User(await self.impl.login(username, password).coroutine())
+
 
 class ObjectBase:
     def __init__(self, impl, client):
@@ -744,12 +809,11 @@ class ObjectBase:
         """Serializes the object to a dictionary."""
         return self.impl.to_dict()
 
-    def to_json(self) -> str:
-        """Serializes the object to a JSON string.
-        Equivalent to `json.dumps(obj.to_dict())`, but might be faster since
-        the work is done in native code."""
+    def to_simple_json(self) -> str:
+        """Serializes the object to a JSON string. Taking Optional[str] instead
+        of Optional[TagValue]."""
 
-        return self.impl.to_json()
+        return self.impl.to_simple_json()
 
     def keys(self):
         """Returns the keys of the object's tags."""
@@ -898,6 +962,22 @@ class AsyncObject(ObjectBase):
             await self.client.delete_object(self.id)
 
 
+class User:
+    """The user in Novi."""
+
+    def __init__(self, impl):
+        self.impl = impl
+
+    @property
+    def id(self) -> str:
+        """The ID of the user."""
+        return self.impl.id()
+
+    def gen_token(self) -> str:
+        """Generates a token for the user."""
+        return self.impl.gen_token()
+
+
 def move(src: Union[Path, str], dst: Union[Path, str], /):
     """Moves a file or directory to another location efficiently."""
 
@@ -913,36 +993,12 @@ def move(src: Union[Path, str], dst: Union[Path, str], /):
         src.unlink()
 
 
-core = _core
-guest_client = Client(_guest_client)
 client = Client(_client)
 aclient = client.to_async()
 
-
-@overload
-def login(name: str, password: str) -> Client: ...
-@overload
-def login(token: str) -> Client: ...
-
-
-def login(name, password=None):
-    if password is None:
-        return Client(core.login_by_token(name).block())
-    else:
-        return Client(core.login(name, password).block())
-
-
-@overload
-async def alogin(name: str, password: str) -> AsyncClient: ...
-@overload
-async def alogin(token: str) -> AsyncClient: ...
-
-
-async def alogin(name, password=None):
-    if password is None:
-        return AsyncClient(await core.login_by_token(name).coroutine())
-    else:
-        return AsyncClient(await core.login(name, password).coroutine())
+session = ContextVar('session', default=_session)
+plugin_user = User(_plugin_user)
+guest_user = User(_guest_user)
 
 
 __all__ = [
@@ -955,9 +1011,9 @@ __all__ = [
     'RpcArgs',
     'NoviError',
     'login',
-    'alogin',
     'get_caller',
-    'guest_client',
+    'plugin_user',
+    'guest_user',
     'client',
     'aclient',
     'move',

@@ -1,4 +1,4 @@
-use crate::{session::INTERNAL_SESSION, user::GUEST_USER, Session};
+use crate::{user::INTERNAL_USER, User};
 use serde::Deserialize;
 use std::{process, sync::Arc};
 use uuid::Uuid;
@@ -24,19 +24,19 @@ pub struct PluginInfo {
     pub disabled: bool,
 }
 impl PluginInfo {
-    pub fn new_session(&self) -> Arc<Session> {
+    pub fn new_user(&self) -> Arc<User> {
         if self.internal {
-            return INTERNAL_SESSION.clone();
+            return INTERNAL_USER.clone();
         }
 
-        let session = Session::new(GUEST_USER.clone());
-        for perm in &self.permissions {
-            session.grant(perm);
-        }
-        for itag in &self.itags {
-            session.grant(format!("itag:{itag}"));
-        }
-        session
+        let perms = self
+            .permissions
+            .iter()
+            .cloned()
+            .chain(self.itags.iter().map(|itag| format!("itag:{itag}")))
+            .collect();
+
+        Arc::new(User::phony(perms))
     }
 }
 

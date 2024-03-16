@@ -1,8 +1,7 @@
 use crate::{
     misc::wrap_nom_from_str,
     query::{pg_pattern_escape, QueryBuilder},
-    session,
-    Error, ErrorKind, Object, Order, Result, TagValue,
+    session, Error, ErrorKind, Object, Order, Result, TagValue,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -517,8 +516,8 @@ impl Filter {
         add_range("updated", updated_range);
         add_range("created", created_range);
 
-        let user = session::get_user();
-        if !user.is_internal() {
+        let user = session::user();
+        if !user.is_admin() {
             use std::fmt::Write;
             q.bind(user.perms.iter().cloned().collect::<Vec<_>>());
             let mut s = format!("${} @> access_perms", q.take_place());

@@ -68,7 +68,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tag::{namespace_of, valid_tag_char, Tag};
+use tag::{scope_of, valid_tag_char, Tag};
 use tag_search::TagSearch;
 use tokio::{
     sync::{mpsc, oneshot, RwLock},
@@ -493,7 +493,7 @@ impl Novi {
 
     #[inline]
     pub async fn save_model<M: Model>(&self, model: &M) -> Result<Arc<Object>> {
-        self.put_object(model.id(), model.to_tags(), None, false)
+        self.update_object(model.id(), model.to_tags(), None, false)
             .await
     }
 }
@@ -701,22 +701,22 @@ impl Novi {
             .await
     }
 
-    pub async fn put_object(
+    pub async fn update_object(
         &self,
         id: Uuid,
         mut tags: Tags,
-        namespaces: Option<BTreeSet<String>>,
+        scopes: Option<BTreeSet<String>>,
         force_update: bool,
     ) -> Result<Arc<Object>> {
-        debug!(%id, ?tags, ?namespaces, "put object");
+        debug!(%id, ?tags, ?scopes, "put object");
         self.validate_tags(tags.keys().map(|it| it.as_str()), true)
             .await?;
 
         let (mut obj, _guard) = self.fetch_and_lock(id).await?;
         self.check_object(&obj, AccessKind::Edit).await?;
 
-        if let Some(namespaces) = &namespaces {
-            tags.retain(|tag, _| namespaces.contains(namespace_of(tag)));
+        if let Some(scopes) = &scopes {
+            tags.retain(|tag, _| scopes.contains(scope_of(tag)));
         }
         let (time, mut tags) = self.to_tag_values(tags)?;
         if !force_update {
@@ -733,9 +733,9 @@ impl Novi {
         let old_tags = obj.tags.clone();
 
         let mut deleted_tags = BTreeSet::new();
-        if let Some(namespaces) = &namespaces {
+        if let Some(scopes) = &scopes {
             obj.tags.retain(|tag, _| {
-                if namespaces.contains(namespace_of(tag)) {
+                if scopes.contains(scope_of(tag)) {
                     deleted_tags.insert(tag.to_owned());
                     false
                 } else {

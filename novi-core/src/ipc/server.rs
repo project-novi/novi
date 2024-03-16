@@ -57,6 +57,12 @@ pub enum RawCommand {
     },
     DeleteObjectTag(Uuid, String),
     DeleteObject(Uuid),
+    UpdateObject {
+        id: Uuid,
+        tags: Tags,
+        scopes: Option<Vec<String>>,
+        force_update: bool,
+    },
     Query {
         filter: String,
         checkpoint: Option<DateTime<Utc>>,
@@ -174,6 +180,21 @@ impl RawCommand {
                     .map(FlattenedObject::from)?,
             ),
             RawCommand::DeleteObject(id) => wrap(novi.delete_object(id).await?),
+            RawCommand::UpdateObject {
+                id,
+                tags,
+                scopes,
+                force_update,
+            } => wrap(
+                novi.update_object(
+                    id,
+                    tags,
+                    scopes.map(|it| it.into_iter().collect()),
+                    force_update,
+                )
+                .await
+                .map(FlattenedObject::from)?,
+            ),
             RawCommand::Query {
                 filter,
                 checkpoint,

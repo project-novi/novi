@@ -252,6 +252,22 @@ impl ClientImpl {
             .invoke(RawCommand::DeleteObject(id.0), |py, _: ()| Ok(py.None()))
     }
 
+    #[pyo3(signature = (id, tags, scopes, force_update))]
+    fn update_object(
+        &self,
+        id: PyUuid,
+        tags: Tags,
+        scopes: Option<Vec<String>>,
+        force_update: bool,
+    ) -> BoxedFuture {
+        self.invoke_return_object(RawCommand::UpdateObject {
+            id: id.0,
+            tags,
+            scopes,
+            force_update,
+        })
+    }
+
     #[pyo3(signature = (filter, checkpoint, updated_after, updated_before, created_after, created_before, order, limit))]
     fn query(
         &self,

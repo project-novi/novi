@@ -511,6 +511,32 @@ class Client(BaseClient):
             id: The ID of the object (UUID)."""
         self.impl.delete_object(id).block()
 
+    def update_object(
+        self,
+        id: str,
+        tags: Tags,
+        scopes: Optional[List[str]] = None,
+        force_update: bool = False,
+    ) -> 'Object':
+        """Updates an object.
+
+        Args:
+            id: The ID of the object (UUID).
+            tags: A dictionary of tags (Dict[str, Optional[str]]).
+            scopes:
+                A list of scopes to be updated. Default is None, which means
+                all scopes.
+            force_update:
+                When set to True, the tag's updated time will be updated
+                even if the value is not changed.
+
+        Returns:
+            The updated object."""
+
+        return Object(
+            self.impl.update_object(id, tags, scopes, force_update).block(), self
+        )
+
     def query(
         self,
         filter: str = '',
@@ -696,6 +722,19 @@ class AsyncClient(BaseClient):
     @copy_docstring(Client.delete_object)
     async def delete_object(self, id: str):
         await self.impl.delete_object(id).coroutine()
+
+    @copy_docstring(Client.update_object)
+    async def update_object(
+        self,
+        id: str,
+        tags: Tags,
+        scopes: Optional[List[str]] = None,
+        force_update: bool = False,
+    ) -> 'Object':
+        return AsyncObject(
+            await self.impl.update_object(id, tags, scopes, force_update).coroutine(),
+            self,
+        )
 
     @copy_docstring(Client.query)
     async def query(

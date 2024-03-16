@@ -13,7 +13,7 @@ pub fn valid_tag_char(c: char) -> bool {
     valid_nonspace_tag_char(c) || c == ' '
 }
 
-pub fn namespace_of(tag: &str) -> &str {
+pub fn scope_of(tag: &str) -> &str {
     if let Some(body) = tag.strip_prefix('@') {
         body.split_once('.')
             .map_or(if body.is_empty() { "@" } else { body }, |(pre, _)| pre)

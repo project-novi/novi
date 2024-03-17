@@ -14,9 +14,8 @@ pub fn valid_tag_char(c: char) -> bool {
 }
 
 pub fn scope_of(tag: &str) -> &str {
-    if let Some(body) = tag.strip_prefix('@') {
-        body.split_once('.')
-            .map_or(if body.is_empty() { "@" } else { body }, |(pre, _)| pre)
+    if tag.starts_with('@') {
+        tag.split_once('.').map_or(tag, |(pre, _)| pre)
     } else {
         ""
     }

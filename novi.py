@@ -729,6 +729,7 @@ class AsyncClient(BaseClient):
         id: str,
         tags: Tags,
         scopes: Optional[List[str]] = None,
+        *,
         force_update: bool = False,
     ) -> 'Object':
         return AsyncObject(

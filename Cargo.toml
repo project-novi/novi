@@ -1,6 +1,10 @@
 [workspace]
-members = [ "novi","novi-core"]
+members = ["novi", "novi-core"]
 resolver = "2"
+
+[workspace.package]
+authors = ["Mivik <mivikq@gmail.com>"]
+license = "MIT"
 
 [profile.release]
 opt-level = 2

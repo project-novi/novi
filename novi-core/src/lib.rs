@@ -2,7 +2,6 @@ mod client;
 mod config;
 mod error;
 mod filter;
-mod image;
 mod ipc;
 mod lock;
 pub mod log;
@@ -15,7 +14,6 @@ mod query;
 mod rule;
 mod session;
 mod tag;
-mod tag_search;
 pub mod user;
 mod vector;
 
@@ -24,7 +22,6 @@ pub use client::{EventKind, RpcProvider, Subscriber};
 pub use config::NoviConfig;
 pub use error::{Error, ErrorKind, Result};
 pub use filter::{Filter, FilterKind, TimeRange};
-pub use image::InferredTag;
 pub use ipc::sub_main;
 pub use lock::{KeyMutex, KeyRwLock};
 pub use model::Model;
@@ -35,7 +32,6 @@ pub use user::{AccessKind, User};
 
 pub(crate) use error::{anyhow, bail};
 
-use ::image::DynamicImage;
 use argon2::{
     password_hash::{rand_core::OsRng, SaltString},
     Argon2, PasswordHasher,
@@ -43,7 +39,6 @@ use argon2::{
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use error::ResultExt;
-use image::ImageModel;
 use interprocess::local_socket::tokio as tokio_ipc;
 use lock::OwnedMutexGuard;
 use moka::future::Cache;
@@ -56,7 +51,7 @@ use sqlx::{
     migrate::Migrator,
     postgres::{PgConnectOptions, PgPoolOptions},
     prelude::FromRow,
-    ConnectOptions, Pool, Postgres, Row,
+    ConnectOptions, Pool, Postgres,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -69,14 +64,12 @@ use std::{
     time::Duration,
 };
 use tag::{scope_of, valid_tag_char, Tag};
-use tag_search::TagSearch;
 use tokio::{
     sync::{mpsc, oneshot, RwLock},
     task_local,
 };
 use tracing::{debug, info, warn};
 use uuid::Uuid;
-use vector::Vector;
 
 use crate::{error::Context, session::internal_scope};
 
@@ -194,9 +187,6 @@ pub struct Novi {
 
     rpc_providers: DashMap<String, (Option<Uuid>, RpcProvider)>,
 
-    image_model: ImageModel,
-    predict_lock: KeyMutex<Uuid, ()>,
-
     plugins: DashMap<String, PluginState>,
 
     pub(crate) session_key: aes_gcm::Key<Aes256Gcm>,
@@ -250,8 +240,7 @@ impl Novi {
                             let _ = std::fs::remove_file(format!("../storage/{}", object.id));
                             let _ =
                                 std::fs::remove_file(format!("../storage/{}.thumb.jpg", object.id));
-                            let _ =
-                                std::fs::remove_file(format!("../storage/{}.opt", object.id));
+                            let _ = std::fs::remove_file(format!("../storage/{}.opt", object.id));
                         }
                         if object.tags.contains_key("@event") {
                             if let Err(err) = internal_scope(novi.delete_object(object.id)).await {
@@ -294,11 +283,6 @@ impl Novi {
             }
         });
 
-        tokio::spawn(tag_search::update_task(
-            db.clone(),
-            config.tag_analyze_interval,
-        ));
-
         let res = Arc::new(Self {
             db,
 
@@ -313,9 +297,6 @@ impl Novi {
             tags: RwLock::default(),
 
             rpc_providers: DashMap::new(),
-
-            image_model: ImageModel::new(&config.model_path)?,
-            predict_lock: KeyMutex::new(),
 
             plugins: DashMap::new(),
 
@@ -1157,24 +1138,6 @@ impl Novi {
 }
 
 impl Novi {
-    pub async fn infer_tags(&self, tags: &[String]) -> Result<Vec<InferredTag>> {
-        if tags.is_empty() {
-            Ok(
-                sqlx::query_file_as!(InferredTag, "sql/infer_tags_empty.sql")
-                    .fetch_all(&self.db)
-                    .await?,
-            )
-        } else {
-            Ok(
-                sqlx::query_file_as!(InferredTag, "sql/infer_tags.sql", tags)
-                    .fetch_all(&self.db)
-                    .await?,
-            )
-        }
-    }
-}
-
-impl Novi {
     pub async fn call(
         &self,
         name: &str,
@@ -1225,109 +1188,6 @@ impl Novi {
         }
 
         Ok(())
-    }
-}
-
-impl Novi {
-    pub async fn image_embedding(&self, id: Uuid) -> Result<Vec<f32>> {
-        let object = self.get_object(id).await?;
-        self.check_object(&object, AccessKind::View).await?;
-
-        if object.get("@") != Some("image") || !object.tags.contains_key("@cached") {
-            bail!(@InvalidObject "object {id} is not a cached image");
-        }
-
-        let _guard = self.predict_lock.lock(id).await;
-
-        let bytes = std::fs::read(format!("storage/{id}"))?;
-        let cksum = {
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            hasher.finalize().to_vec()
-        };
-
-        let sql = "select embedding from image_embedding where id = $1 and cksum = $2 and model_cksum = $3";
-        let res: Option<Vector> = sqlx::query_scalar(sql)
-            .bind(id)
-            .bind(&cksum)
-            .bind(self.image_model.checksum())
-            .fetch_optional(&self.db)
-            .await?;
-
-        let embedding = match res {
-            Some(res) => res,
-            None => {
-                let image = ::image::load_from_memory(&bytes).unwrap();
-                let res = self.image_model.embedding(image)?;
-                let res = Vector(res);
-                let sql = "
-                insert into image_embedding(id, cksum, model_cksum, embedding) values($1, $2, $3, $4)
-                on conflict(id) do update set cksum = $2, model_cksum = $3, embedding = $4
-                ";
-                sqlx::query(sql)
-                    .bind(id)
-                    .bind(&cksum)
-                    .bind(self.image_model.checksum())
-                    .bind(&res)
-                    .execute(&self.db)
-                    .await?;
-
-                res
-            }
-        };
-
-        Ok(embedding.0)
-    }
-
-    pub async fn predict_tags(&self, id: Uuid) -> Result<Vec<InferredTag>> {
-        Ok(self
-            .image_model
-            .predict(self.image_embedding(id).await?.into()))
-    }
-
-    pub async fn predict_tags_dbr(&self, id: Uuid) -> Result<Vec<InferredTag>> {
-        Ok(self
-            .image_model
-            .predict_dbr(self.image_embedding(id).await?.into()))
-    }
-
-    #[inline]
-    pub async fn infer_tags_v2(&self, tags: &[&str]) -> Result<Vec<InferredTag>> {
-        if tags.is_empty() {
-            return self.infer_tags(&[]).await;
-        }
-        self.image_model.infer(tags)
-    }
-
-    #[inline]
-    pub async fn embedding(&self, img: DynamicImage) -> Result<Vec<f32>> {
-        self.image_model.embedding(img)
-    }
-
-    pub async fn find_similar(&self, embedding: Vec<f32>) -> Result<Vec<SimilarObject>> {
-        // TODO authorization
-        let sql = "select object.*, 1 - (embedding <=> $1) as similarity from image_embedding join object on object.id = image_embedding.id order by similarity desc limit 10";
-        let res = sqlx::query(sql)
-            .bind(&Vector(embedding))
-            .fetch_all(&self.db)
-            .await?;
-
-        let mut objects = Vec::with_capacity(res.len());
-        for row in res {
-            let similarity = row.get("similarity");
-            let object = Object::from_row(row).unwrap();
-            if self.check_object(&object, AccessKind::View).await.is_ok() {
-                objects.push(SimilarObject { object, similarity });
-            }
-        }
-
-        Ok(objects)
-    }
-}
-
-impl Novi {
-    pub async fn search_tag(&self, tag: &str) -> Result<Vec<TagSearch>> {
-        return tag_search::search(&self.db, tag).await;
     }
 }
 

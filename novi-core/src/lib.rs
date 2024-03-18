@@ -251,7 +251,7 @@ impl Novi {
                             let _ =
                                 std::fs::remove_file(format!("../storage/{}.thumb.jpg", object.id));
                             let _ =
-                                std::fs::remove_file(format!("../storage/{}.opt.jpg", object.id));
+                                std::fs::remove_file(format!("../storage/{}.opt", object.id));
                         }
                         if object.tags.contains_key("@event") {
                             if let Err(err) = internal_scope(novi.delete_object(object.id)).await {

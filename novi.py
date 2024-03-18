@@ -17,6 +17,7 @@ from typing import (
     Callable,
     Dict,
     List,
+    Literal,
     Generic,
     Optional,
     overload,
@@ -896,20 +897,29 @@ class ObjectBase:
     def __contains__(self, tag: str) -> bool:
         return self.has(tag)
 
-    @property
-    def path(self) -> Path:
+    def path(
+        self, kind: Literal['original', 'thumbnail', 'optimized'] = 'original'
+    ) -> Path:
         """The path of the object file (Path).
 
+        Args:
+            kind:
+                The kind of the file. Can be one of the following:
+                    - 'original': The original file.
+                    - 'thumbnail': The thumbnail file, always in JPEG format.
+                    - 'optimized': The optimized file, like compressed images.
+
+        Returns:
+            The file path (Path).
+
         **SUBJECT TO CHANGE**"""
-        return self.client.object_storage_path / self.id
+        path = self.client.object_storage_path / self.id
+        if kind == 'thumbnail':
+            path = path.with_suffix('.thumb.jpg')
+        elif kind == 'optimized':
+            path = path.with_suffix('.opt')
 
-    @property
-    def thumbnail_path(self) -> Path:
-        """The path of the object's thumbnail file (Path).
-
-        **SUBJECT TO CHANGE**"""
-
-        return self.path.with_suffix('.thumb.jpg')
+        return path
 
     def __str__(self) -> str:
         return f'Object(id={self.id})'

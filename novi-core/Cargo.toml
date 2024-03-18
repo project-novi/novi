@@ -19,6 +19,7 @@ colored = "2.1.0"
 dashmap = "5.5.3"
 futures-util = "0.3.30"
 interprocess = { version = "1.2.1", features = ["tokio_support"] }
+key-mutex = { version = "0.1.2", default-features = false, features = ["tokio"] }
 libc = "0.2.153"
 moka = { version = "0.12.1", features = ["future"] }
 nom = "7.1.3"

@@ -3,7 +3,6 @@ mod config;
 mod error;
 mod filter;
 mod ipc;
-mod lock;
 pub mod log;
 mod misc;
 mod model;
@@ -17,13 +16,11 @@ mod tag;
 pub mod user;
 mod vector;
 
-use aes_gcm::Aes256Gcm;
 pub use client::{EventKind, RpcProvider, Subscriber};
 pub use config::NoviConfig;
 pub use error::{Error, ErrorKind, Result};
 pub use filter::{Filter, FilterKind, TimeRange};
 pub use ipc::sub_main;
-pub use lock::{KeyMutex, KeyRwLock};
 pub use model::Model;
 pub use object::{Object, ObjectMeta};
 pub use session::Session;
@@ -32,6 +29,7 @@ pub use user::{AccessKind, User};
 
 pub(crate) use error::{anyhow, bail};
 
+use aes_gcm::Aes256Gcm;
 use argon2::{
     password_hash::{rand_core::OsRng, SaltString},
     Argon2, PasswordHasher,
@@ -40,7 +38,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use error::ResultExt;
 use interprocess::local_socket::tokio as tokio_ipc;
-use lock::OwnedMutexGuard;
+use key_mutex::tokio::{KeyMutex, OwnedMutexGuard};
 use moka::future::Cache;
 use once_cell::sync::Lazy;
 use plugin::{PluginInfo, PluginState};

@@ -1057,6 +1057,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "key-mutex"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fad1fbfe1cb6355cd5549ff203b61b7527b13a6d571c76782ac040dc19d22ea8"
+dependencies = [
+ "dashmap",
+ "tokio",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1258,6 +1268,7 @@ dependencies = [
  "dashmap",
  "futures-util",
  "interprocess",
+ "key-mutex",
  "libc",
  "moka",
  "nom",

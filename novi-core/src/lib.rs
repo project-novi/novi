@@ -14,7 +14,6 @@ mod rule;
 mod session;
 mod tag;
 pub mod user;
-mod vector;
 
 pub use client::{EventKind, RpcProvider, Subscriber};
 pub use config::NoviConfig;

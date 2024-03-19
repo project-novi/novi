@@ -17,12 +17,13 @@ use std::{
 pub enum FilterKind {
     Has,
     Updated,
+    Deleted,
     Equals(String, bool),
     Contains(String, bool),
 }
 
 impl FilterKind {
-    pub fn satisfies(&self, val: Option<&TagValue>, updated: DateTime<Utc>) -> bool {
+    pub fn satisfies(&self, val: Option<&TagValue>, deleted: bool, updated: DateTime<Utc>) -> bool {
         let val = match val {
             Some(val) => val,
             None => {
@@ -36,6 +37,7 @@ impl FilterKind {
         match self {
             FilterKind::Has => true,
             FilterKind::Updated => val.updated == updated,
+            FilterKind::Deleted => deleted,
             FilterKind::Equals(value, eq) => (val.value.as_ref() == Some(value)) == *eq,
             FilterKind::Contains(value, eq) => {
                 val.value.as_ref().map_or(false, |it| it.contains(value)) == *eq
@@ -64,6 +66,7 @@ impl Display for Filter {
             Self::Atom(tag, kind) => match kind {
                 FilterKind::Has => write!(f, "{tag}"),
                 FilterKind::Updated => write!(f, "+{tag}"),
+                FilterKind::Deleted => write!(f, "~{tag}"),
                 FilterKind::Equals(value, eq) => {
                     write!(f, "{tag}{}={value:?}", if *eq { "" } else { "!" })
                 }
@@ -125,12 +128,16 @@ impl Filter {
         }
     }
 
-    pub fn satisfies(&self, object: &Object) -> bool {
+    pub fn satisfies(&self, object: &Object, deleted_tags: &BTreeSet<String>) -> bool {
         match self {
-            Self::Atom(tag, kind) => kind.satisfies(object.tags().get(tag), object.meta.updated),
-            Self::Ands(conds) => conds.iter().all(|it| it.satisfies(object)),
-            Self::Ors(conds) => conds.iter().any(|it| it.satisfies(object)),
-            Self::Neg(filter) => !filter.satisfies(object),
+            Self::Atom(tag, kind) => kind.satisfies(
+                object.tags().get(tag),
+                deleted_tags.contains(tag),
+                object.meta.updated,
+            ),
+            Self::Ands(conds) => conds.iter().all(|it| it.satisfies(object, deleted_tags)),
+            Self::Ors(conds) => conds.iter().any(|it| it.satisfies(object, deleted_tags)),
+            Self::Neg(filter) => !filter.satisfies(object, deleted_tags),
         }
     }
 
@@ -156,19 +163,19 @@ impl Filter {
     pub fn satisfies_excluding(
         &self,
         object: &Object,
-        checkpoint: Option<DateTime<Utc>>,
+        exclude_unrelated: bool,
         deleted_tags: &BTreeSet<String>,
     ) -> bool {
-        if !self.satisfies(object) {
+        if !self.satisfies(object, deleted_tags) {
             return false;
         }
 
-        if let Some(ckpt) = checkpoint {
+        if exclude_unrelated {
             if !self.visit_tags(|tag| {
-                object
-                    .tags
-                    .get(tag)
-                    .map_or_else(|| deleted_tags.contains(tag), |it| it.updated > ckpt)
+                object.tags.get(tag).map_or_else(
+                    || deleted_tags.contains(tag),
+                    |it| it.updated == object.meta.updated,
+                )
             }) {
                 return false;
             }
@@ -355,6 +362,9 @@ pub(crate) mod parse {
         let updated = map(preceded(char('+'), tag_name), |tag| {
             Filter::Atom(tag.to_owned(), FilterKind::Updated)
         });
+        let deleted = map(preceded(char('~'), tag_name), |tag| {
+            Filter::Atom(tag.to_owned(), FilterKind::Deleted)
+        });
         let neg = map(preceded(char('-'), atom), |f| Filter::Neg(Box::new(f)));
         let parens = delimited(
             preceded(char('('), multispace0),
@@ -362,7 +372,7 @@ pub(crate) mod parse {
             preceded(multispace0, char(')')),
         );
 
-        alt((all, none, infix, prefix, has, updated, neg, parens)).parse(i)
+        alt((all, none, infix, prefix, has, updated, deleted, neg, parens)).parse(i)
     }
 
     pub fn ors(i: &str) -> Result<Filter> {
@@ -430,6 +440,9 @@ impl Filter {
                     }
                     FilterKind::Updated => {
                         write!(w, "(tags->${t}->>'u' = updated::text)").unwrap();
+                    }
+                    FilterKind::Deleted => {
+                        *w += "false";
                     }
                     FilterKind::Equals(value, eq) => {
                         q.bind(value.clone());

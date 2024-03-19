@@ -4,7 +4,7 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::{Debug, Display},
     str::FromStr,
 };
@@ -160,7 +160,7 @@ impl Rule {
     pub fn apply<'a>(&self, object: &mut Object, time: DateTime<Utc>) -> bool {
         let mut updated = false;
 
-        if self.condition.satisfies(object) {
+        if self.condition.satisfies(object, &BTreeSet::new()) {
             for (tag, cons) in &self.consequences.0 {
                 if cons.need_update(object.tags().get(tag)) {
                     match cons {

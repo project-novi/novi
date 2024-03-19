@@ -1,7 +1,9 @@
 mod client;
 mod config;
+mod dispatch;
 mod error;
 mod filter;
+pub mod hook;
 mod ipc;
 pub mod log;
 mod misc;
@@ -35,6 +37,7 @@ use argon2::{
 };
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use dispatch::Dispatcher;
 use error::ResultExt;
 use interprocess::local_socket::tokio as tokio_ipc;
 use key_mutex::tokio::{KeyMutex, OwnedMutexGuard};
@@ -119,8 +122,6 @@ impl<V: AsRef<str>, T: Iterator<Item = V>> JoinToString for T {
 
 struct SubscriberState {
     subscriber: Subscriber,
-    filter: Filter,
-    time: DateTime<Utc>,
     exclude_unrelated: bool,
 }
 
@@ -128,11 +129,11 @@ enum WorkerMessage {
     Event {
         kind: EventKind,
         object: Arc<Object>,
-        time: DateTime<Utc>,
         deleted_tags: BTreeSet<String>,
     },
     NewSub {
         id: Uuid,
+        filter: Filter,
         state: SubscriberState,
     },
     RemoveSub {
@@ -202,11 +203,11 @@ impl Novi {
         let (tx, mut rx) = mpsc::unbounded_channel();
         tokio::spawn(async move {
             let novi = novi_rx.await.unwrap();
-            let mut subscribers = BTreeMap::new();
+            let mut subscribers = Dispatcher::new();
             while let Some(obj) = rx.recv().await {
                 match obj {
-                    WorkerMessage::NewSub { id, state } => {
-                        subscribers.insert(id, state);
+                    WorkerMessage::NewSub { id, filter, state } => {
+                        subscribers.insert(id, filter, state);
                     }
                     WorkerMessage::RemoveSub { id } => {
                         subscribers.remove(&id);
@@ -214,23 +215,13 @@ impl Novi {
                     WorkerMessage::Event {
                         kind,
                         object,
-                        time,
                         deleted_tags,
                     } => {
                         debug!(object = %object.id, ?kind, "dispatch event");
-                        for sub in subscribers.values_mut() {
-                            if sub.filter.satisfies_excluding(
-                                &object,
-                                if sub.exclude_unrelated {
-                                    Some(sub.time)
-                                } else {
-                                    None
-                                },
-                                &deleted_tags,
-                            ) {
-                                (sub.subscriber)(&object, kind);
-                            }
-                            sub.time = time;
+                        for (.., sub) in
+                            subscribers.dispatch(&object, |it| it.exclude_unrelated, &deleted_tags)
+                        {
+                            (sub.subscriber)(&object, kind);
                         }
 
                         if kind == EventKind::Deleted {
@@ -547,11 +538,20 @@ impl Novi {
         Ok(())
     }
 
-    async fn clo_and_save(&self, object: &mut Object, time: DateTime<Utc>) -> Result<()> {
+    async fn submit_change(
+        &self,
+        old: &Object,
+        object: &mut Object,
+        time: DateTime<Utc>,
+    ) -> Result<()> {
         self.user_cache.remove(&object.id).await;
 
         self.rule_set.read().await.closure(object, time);
+        hook::run(hook::BeforeUpdateObject { old, object })?;
+        // TODO optimize
+        self.rule_set.read().await.closure(object, time);
         object.save().execute(&self.db).await?;
+        hook::run(hook::BeforeUpdateObject { old, object })?;
 
         Ok(())
     }
@@ -559,7 +559,6 @@ impl Novi {
     async fn object_event(
         &self,
         kind: EventKind,
-        time: DateTime<Utc>,
         object: Object,
         deleted_tags: BTreeSet<String>,
     ) -> Result<Arc<Object>> {
@@ -569,7 +568,6 @@ impl Novi {
             .send(WorkerMessage::Event {
                 kind,
                 object: Arc::clone(&object),
-                time,
                 deleted_tags,
             })
             .wrap()?;
@@ -628,6 +626,14 @@ impl Novi {
             Some(rule_set) => rule_set.closure(&mut object, time),
             None => self.rule_set.read().await.closure(&mut object, time),
         };
+        hook::run(hook::BeforeAddObject {
+            object: &mut object,
+        })?;
+        // TODO optimize
+        match rule_set {
+            Some(rule_set) => rule_set.closure(&mut object, time),
+            None => self.rule_set.read().await.closure(&mut object, time),
+        };
 
         object.id = sqlx::query_scalar!(
             "insert into object(tags, created, updated) values($1, $2, $2) returning id",
@@ -639,8 +645,10 @@ impl Novi {
 
         let _guard = self.object_lock.lock(object.id).await;
 
+        hook::run(hook::AfterAddObject { object: &object })?;
+
         let object = self
-            .object_event(EventKind::Created, time, object, BTreeSet::new())
+            .object_event(EventKind::Created, object, BTreeSet::new())
             .await?;
         if !object.tags.contains_key("@event") {
             info!(id = %object.id(), "create object");
@@ -651,18 +659,20 @@ impl Novi {
 
     #[inline]
     pub async fn delete_object(&self, id: Uuid) -> Result<()> {
-        let (obj, _guard) = self.fetch_and_lock(id).await?;
+        let (mut obj, _guard) = self.fetch_and_lock(id).await?;
         if !obj.tags.contains_key("@event") {
             info!(id = %id, "delete object");
         }
         self.check_object(&obj, AccessKind::Delete).await?;
 
+        hook::run(hook::BeforeDeleteObject { object: &mut obj })?;
         sqlx::query!("delete from object where id = $1", id)
             .execute(&self.db)
             .await?;
+        hook::run(hook::AfterDeleteObject { object: &obj })?;
 
         if !obj.tags().contains_key("@event") {
-            self.object_event(EventKind::Deleted, Utc::now(), obj, BTreeSet::new())
+            self.object_event(EventKind::Deleted, obj, BTreeSet::new())
                 .await?;
         }
 
@@ -671,11 +681,11 @@ impl Novi {
 
     async fn set_object_tags_force(&self, mut obj: Object, tags: Tags) -> Result<Arc<Object>> {
         let (time, tags) = self.to_tag_values(tags)?;
-
+        let old = obj.clone();
         obj.tags.extend(tags.into_iter());
-        self.clo_and_save(&mut obj, time).await?;
+        self.submit_change(&old, &mut obj, time).await?;
 
-        self.object_event(EventKind::Updated, time, obj, BTreeSet::new())
+        self.object_event(EventKind::Updated, obj, BTreeSet::new())
             .await
     }
 
@@ -708,7 +718,7 @@ impl Novi {
         }
 
         // TODO optimize
-        let old_tags = obj.tags.clone();
+        let old = obj.clone();
 
         let mut deleted_tags = BTreeSet::new();
         if let Some(scopes) = &scopes {
@@ -724,12 +734,12 @@ impl Novi {
         } else {
             deleted_tags = std::mem::replace(&mut obj.tags, tags).into_keys().collect();
         }
-        if !force_update && old_tags == obj.tags {
+        if !force_update && old.tags == obj.tags {
             return Ok(Arc::new(obj));
         }
-        self.clo_and_save(&mut obj, time).await?;
+        self.submit_change(&old, &mut obj, time).await?;
 
-        self.object_event(EventKind::Updated, time, obj, deleted_tags)
+        self.object_event(EventKind::Updated, obj, deleted_tags)
             .await
     }
 
@@ -765,6 +775,7 @@ impl Novi {
             return self.set_object_tags_force(obj, tags).await;
         }
 
+        let old = obj.clone();
         let time = Utc::now();
         let mut updated = false;
         for (tag, value) in tags {
@@ -782,9 +793,9 @@ impl Novi {
             debug!("not updated");
             return Ok(Arc::new(obj));
         }
-        self.clo_and_save(&mut obj, time).await?;
+        self.submit_change(&old, &mut obj, time).await?;
 
-        self.object_event(EventKind::Updated, time, obj, BTreeSet::new())
+        self.object_event(EventKind::Updated, obj, BTreeSet::new())
             .await
     }
 
@@ -795,15 +806,15 @@ impl Novi {
         let (mut obj, _guard) = self.fetch_and_lock(id).await?;
         self.check_object(&obj, AccessKind::Edit).await?;
 
+        let old = obj.clone();
         let time = Utc::now();
         if obj.tags.remove(tag).is_none() {
             return Ok(Arc::new(obj));
         }
-        self.clo_and_save(&mut obj, time).await?;
+        self.submit_change(&old, &mut obj, time).await?;
 
         self.object_event(
             EventKind::Updated,
-            time,
             obj,
             iter::once(tag.to_owned()).collect(),
         )
@@ -875,11 +886,10 @@ impl Novi {
         self.worker_tx
             .send(WorkerMessage::NewSub {
                 id,
+                filter,
                 state: SubscriberState {
                     subscriber,
-                    filter,
                     exclude_unrelated,
-                    time: checkpoint.unwrap_or_else(Utc::now),
                 },
             })
             .wrap()?;

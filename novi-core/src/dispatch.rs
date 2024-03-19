@@ -20,12 +20,30 @@ impl<K: Eq + Hash, V> Dispatcher<K, V> {
         self.receivers.insert(key, (filter, value));
     }
 
-    pub fn dispatch<'a>(
-        &'a mut self,
-        object: &'a Object,
+    pub fn dispatch<'a, 'b>(
+        &'a self,
+        object: &'b Object,
         exclude: impl Fn(&V) -> bool + 'a,
         deleted_tags: &'a BTreeSet<String>,
-    ) -> impl Iterator<Item = (&'a K, &'a Filter, &'a mut V)> + 'a {
+    ) -> impl Iterator<Item = (&'a K, &'a Filter, &'a V)> + 'b
+    where
+        'a: 'b,
+    {
+        self.receivers
+            .iter()
+            .filter(move |(_, (f, v))| f.satisfies_excluding(object, exclude(v), deleted_tags))
+            .map(|(k, (f, v))| (k, f as &Filter, v))
+    }
+
+    pub fn dispatch_mut<'a, 'b>(
+        &'a mut self,
+        object: &'b Object,
+        exclude: impl Fn(&V) -> bool + 'a,
+        deleted_tags: &'a BTreeSet<String>,
+    ) -> impl Iterator<Item = (&'a K, &'a Filter, &'a mut V)> + 'b
+    where
+        'a: 'b,
+    {
         self.receivers
             .iter_mut()
             .filter(move |(_, (f, v))| f.satisfies_excluding(object, exclude(v), deleted_tags))
@@ -34,6 +52,12 @@ impl<K: Eq + Hash, V> Dispatcher<K, V> {
 
     pub fn remove(&mut self, key: &K) {
         self.receivers.remove(key);
+    }
+}
+
+impl<K: Eq + Hash, V> Default for Dispatcher<K, V> {
+    fn default() -> Self {
+        Dispatcher::new()
     }
 }
 

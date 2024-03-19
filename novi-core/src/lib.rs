@@ -218,9 +218,11 @@ impl Novi {
                         deleted_tags,
                     } => {
                         debug!(object = %object.id, ?kind, "dispatch event");
-                        for (.., sub) in
-                            subscribers.dispatch(&object, |it| it.exclude_unrelated, &deleted_tags)
-                        {
+                        for (.., sub) in subscribers.dispatch_mut(
+                            &object,
+                            |it| it.exclude_unrelated,
+                            &deleted_tags,
+                        ) {
                             (sub.subscriber)(&object, kind);
                         }
 
@@ -541,19 +543,36 @@ impl Novi {
     async fn submit_change(
         &self,
         old: &Object,
-        object: &mut Object,
-        time: DateTime<Utc>,
-    ) -> Result<()> {
+        mut object: Object,
+        deleted_tags: BTreeSet<String>,
+    ) -> Result<Arc<Object>> {
         self.user_cache.remove(&object.id).await;
 
-        self.rule_set.read().await.closure(object, time);
-        hook::run(hook::BeforeUpdateObject { old, object })?;
-        // TODO optimize
-        self.rule_set.read().await.closure(object, time);
-        object.save().execute(&self.db).await?;
-        hook::run(hook::BeforeUpdateObject { old, object })?;
+        let time = object.meta.updated;
 
-        Ok(())
+        self.rule_set.read().await.closure(&mut object, time);
+        hook::run(
+            hook::BeforeUpdateObject {
+                old,
+                object: &mut object,
+            },
+            |it| &it.object,
+            &deleted_tags,
+        )?;
+        // TODO optimize
+        self.rule_set.read().await.closure(&mut object, time);
+        object.save().execute(&self.db).await?;
+        hook::run(
+            hook::AfterUpdateObject {
+                old,
+                object: &object,
+            },
+            |it| &it.object,
+            &deleted_tags,
+        )?;
+
+        self.object_event(EventKind::Updated, object, deleted_tags)
+            .await
     }
 
     async fn object_event(
@@ -626,9 +645,13 @@ impl Novi {
             Some(rule_set) => rule_set.closure(&mut object, time),
             None => self.rule_set.read().await.closure(&mut object, time),
         };
-        hook::run(hook::BeforeAddObject {
-            object: &mut object,
-        })?;
+        hook::run(
+            hook::BeforeAddObject {
+                object: &mut object,
+            },
+            |it| &it.object,
+            &BTreeSet::new(),
+        )?;
         // TODO optimize
         match rule_set {
             Some(rule_set) => rule_set.closure(&mut object, time),
@@ -645,7 +668,11 @@ impl Novi {
 
         let _guard = self.object_lock.lock(object.id).await;
 
-        hook::run(hook::AfterAddObject { object: &object })?;
+        hook::run(
+            hook::AfterAddObject { object: &object },
+            |it| &it.object,
+            &BTreeSet::new(),
+        )?;
 
         let object = self
             .object_event(EventKind::Created, object, BTreeSet::new())
@@ -665,11 +692,19 @@ impl Novi {
         }
         self.check_object(&obj, AccessKind::Delete).await?;
 
-        hook::run(hook::BeforeDeleteObject { object: &mut obj })?;
+        hook::run(
+            hook::BeforeDeleteObject { object: &mut obj },
+            |it| &it.object,
+            &BTreeSet::new(),
+        )?;
         sqlx::query!("delete from object where id = $1", id)
             .execute(&self.db)
             .await?;
-        hook::run(hook::AfterDeleteObject { object: &obj })?;
+        hook::run(
+            hook::AfterDeleteObject { object: &obj },
+            |it| &it.object,
+            &BTreeSet::new(),
+        )?;
 
         if !obj.tags().contains_key("@event") {
             self.object_event(EventKind::Deleted, obj, BTreeSet::new())
@@ -683,10 +718,8 @@ impl Novi {
         let (time, tags) = self.to_tag_values(tags)?;
         let old = obj.clone();
         obj.tags.extend(tags.into_iter());
-        self.submit_change(&old, &mut obj, time).await?;
-
-        self.object_event(EventKind::Updated, obj, BTreeSet::new())
-            .await
+        obj.meta.updated = time;
+        self.submit_change(&old, obj, BTreeSet::new()).await
     }
 
     pub async fn update_object(
@@ -737,10 +770,8 @@ impl Novi {
         if !force_update && old.tags == obj.tags {
             return Ok(Arc::new(obj));
         }
-        self.submit_change(&old, &mut obj, time).await?;
-
-        self.object_event(EventKind::Updated, obj, deleted_tags)
-            .await
+        obj.meta.updated = time;
+        self.submit_change(&old, obj, deleted_tags).await
     }
 
     pub async fn set_object_tag(
@@ -793,10 +824,8 @@ impl Novi {
             debug!("not updated");
             return Ok(Arc::new(obj));
         }
-        self.submit_change(&old, &mut obj, time).await?;
-
-        self.object_event(EventKind::Updated, obj, BTreeSet::new())
-            .await
+        obj.meta.updated = time;
+        self.submit_change(&old, obj, BTreeSet::new()).await
     }
 
     pub async fn delete_object_tag(&self, id: Uuid, tag: &str) -> Result<Arc<Object>> {
@@ -811,14 +840,9 @@ impl Novi {
         if obj.tags.remove(tag).is_none() {
             return Ok(Arc::new(obj));
         }
-        self.submit_change(&old, &mut obj, time).await?;
-
-        self.object_event(
-            EventKind::Updated,
-            obj,
-            iter::once(tag.to_owned()).collect(),
-        )
-        .await
+        obj.meta.updated = time;
+        self.submit_change(&old, obj, iter::once(tag.to_owned()).collect())
+            .await
     }
 
     pub async fn get_object_tag(&self, id: Uuid, tag: &str) -> Result<Option<String>> {

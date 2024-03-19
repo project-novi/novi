@@ -221,8 +221,6 @@ impl RuleSet {
         time: DateTime<Utc>,
         additional: impl Iterator<Item = &'a Rule>,
     ) -> bool {
-        object.meta.updated = time;
-
         let mut updated = true;
         let mut any_updated = false;
 
@@ -254,6 +252,10 @@ impl RuleSet {
             }
 
             any_updated |= updated;
+        }
+
+        if any_updated {
+            object.meta.updated = time;
         }
 
         any_updated

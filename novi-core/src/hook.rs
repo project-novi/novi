@@ -1,6 +1,6 @@
-use crate::{Object, Result};
+use crate::{dispatch::Dispatcher, Filter, Object, Result};
 use once_cell::sync::Lazy;
-use std::sync::RwLock;
+use std::{collections::BTreeSet, sync::RwLock};
 
 pub trait HookPoint {
     const ID: usize;
@@ -53,24 +53,61 @@ define_hooks!(
 );
 
 type HookFn<T> = Box<dyn Fn(&mut T) -> Result<()> + Send + Sync>;
+#[derive(Default)]
+struct HookPointState {
+    hooks: Dispatcher<u64, HookFn<()>>,
+    gen: u32,
+}
+impl HookPointState {
+    fn insert(&mut self, f: HookFn<()>, filter: Filter, priority: u32) -> u64 {
+        let id = self.gen as u64 | ((priority as u64) << 32);
+        self.gen += 1;
+        self.hooks.insert(id, filter, f);
+        id
+    }
+
+    fn run<T>(
+        &self,
+        mut data: T,
+        object: impl for<'a> FnOnce(&'a T) -> &'a Object,
+        deleted_tags: &BTreeSet<String>,
+    ) -> Result<()> {
+        let hooks = self
+            .hooks
+            .dispatch(object(&data), |_| false, deleted_tags)
+            .map(|(_, _, f)| f)
+            .collect::<Vec<_>>();
+
+        for hook in hooks {
+            let hook: &HookFn<T> = unsafe { std::mem::transmute(hook) };
+            hook(&mut data)?;
+        }
+        Ok(())
+    }
+}
+
 struct HookRegistry {
-    hooks: [RwLock<Vec<HookFn<()>>>; NUM_TOTAL_HOOKS],
+    hooks: [RwLock<HookPointState>; NUM_TOTAL_HOOKS],
 }
 static REGISTRY: Lazy<HookRegistry> = Lazy::new(|| HookRegistry {
     hooks: Default::default(),
 });
 
-pub fn register<T: HookPoint>(f: HookFn<T>) {
-    REGISTRY.hooks[T::ID]
-        .write()
-        .unwrap()
-        .push(unsafe { std::mem::transmute(f) });
+pub fn register<T: HookPoint>(f: HookFn<T>, filter: Filter, priority: u32) -> u64 {
+    REGISTRY.hooks[T::ID].write().unwrap().insert(
+        unsafe { std::mem::transmute(f) },
+        filter,
+        priority,
+    )
 }
 
-pub(crate) fn run<T: HookPoint>(mut data: T) -> Result<()> {
-    for hook in REGISTRY.hooks[T::ID].read().unwrap().iter().rev() {
-        let hook = unsafe { std::mem::transmute::<_, &HookFn<T>>(hook) };
-        hook(&mut data)?;
-    }
-    Ok(())
+pub(crate) fn run<T: HookPoint>(
+    data: T,
+    object: impl FnOnce(&T) -> &Object,
+    deleted_tags: &BTreeSet<String>,
+) -> Result<()> {
+    REGISTRY.hooks[T::ID]
+        .read()
+        .unwrap()
+        .run(data, object, deleted_tags)
 }

@@ -1,0 +1,207 @@
+syntax = "proto3";
+
+// import "google/protobuf/any.proto";
+
+package novi;
+
+message Error {
+  string kind = 1;
+  string message = 2;
+  map<string, string> metadata = 3;
+}
+
+message UUID {
+  fixed64 hi = 1;
+  fixed64 lo = 2;
+}
+
+message TagValue {
+  optional string value = 1;
+  int64 updated = 2;
+}
+
+message Tags {
+  map<string, string> properties = 1;
+  repeated string tags = 2;
+}
+
+message Object {
+  UUID id = 1;
+  map<string, TagValue> tags = 2;
+  optional UUID creator = 3;
+  int64 updated = 4;
+  int64 created = 5;
+}
+
+message Scopes { repeated string scopes = 1; }
+
+service Novi {
+  rpc Login(LoginRequest) returns (LoginReply);
+  rpc UseMasterKey(UseMasterKeyRequest) returns (UseMasterKeyReply);
+
+  rpc NewSession(NewSessionRequest) returns (NewSessionReply);
+  rpc EndSession(EndSessionRequest) returns (EndSessionReply);
+
+  rpc CreateObject(CreateObjectRequest) returns (CreateObjectReply);
+  rpc GetObject(GetObjectRequest) returns (GetObjectReply);
+  rpc UpdateObject(UpdateObjectRequest) returns (UpdateObjectReply);
+  rpc ReplaceObject(ReplaceObjectRequest) returns (ReplaceObjectReply);
+  rpc DeleteObjectTags(DeleteObjectTagsRequest) returns (DeleteObjectTagsReply);
+  rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectReply);
+
+  rpc Query(QueryRequest) returns (QueryReply);
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeReply);
+  rpc RegisterHook(stream RegHookRequest) returns (stream RegHookReply);
+  rpc RegisterFunction(stream RegFunctionRequest)
+      returns (stream RegFunctionReply);
+  rpc CallFunction(CallFunctionRequest) returns (CallFunctionReply);
+
+  //   rpc GetUser(GetUserRequest) returns (Object);
+  //   rpc CheckPermission(CheckPermissionRequest) returns
+  //   (CheckPermissionReply);
+}
+
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+message LoginReply { string identity = 1; }
+
+message UseMasterKeyRequest { string key = 1; }
+message UseMasterKeyReply { string identity = 1; }
+
+message NewSessionRequest { bool lock = 1; }
+message NewSessionReply { string token = 1; }
+
+message EndSessionRequest { bool commit = 1; }
+message EndSessionReply {}
+
+message CreateObjectRequest { Tags tags = 1; }
+message CreateObjectReply { Object object = 1; }
+
+message GetObjectRequest { UUID id = 1; }
+message GetObjectReply { Object object = 1; }
+
+message UpdateObjectRequest {
+  UUID id = 1;
+  Tags tags = 2;
+  bool force = 3;
+}
+message UpdateObjectReply { Object object = 1; }
+
+message ReplaceObjectRequest {
+  UUID id = 1;
+  Tags tags = 2;
+  optional Scopes scopes = 3;
+  bool force = 4;
+}
+message ReplaceObjectReply { Object object = 1; }
+
+message DeleteObjectTagsRequest {
+  UUID id = 1;
+  repeated string tags = 2;
+}
+message DeleteObjectTagsReply { Object object = 1; }
+
+message DeleteObjectRequest { UUID id = 1; }
+message DeleteObjectReply {}
+
+message QueryRequest {
+  string filter = 1;
+  optional int64 checkpoint = 2;
+  optional int64 updated_after = 3;
+  optional int64 updated_before = 4;
+  optional int64 created_after = 5;
+  optional int64 created_before = 6;
+  Order order = 7;
+  optional uint32 limit = 8;
+
+  enum Order {
+    CREATED_DESC = 0;
+    CREATED_ASC = 1;
+    UPDATED_DESC = 2;
+    UPDATED_ASC = 3;
+  }
+}
+message QueryReply { repeated Object objects = 1; }
+
+enum EventKind {
+  CREATE = 0;
+  UPDATE = 1;
+  DELETE = 2;
+}
+message SubscribeRequest {
+  string filter = 1;
+  optional int64 checkpoint = 2;
+  repeated EventKind accept_kinds = 3;
+}
+message SubscribeReply {
+  Object object = 1;
+  EventKind kind = 2;
+}
+
+message ObjectEdits {
+  repeated string deletes = 1;
+  Tags update = 2;
+  bool clear = 3;
+}
+message RegHookRequest {
+  // On editing this, make sure to update HOOK_POINT_COUNT in hook.rs
+  enum HookPoint {
+    BEFORE_CREATE = 0;
+    AFTER_CREATE = 1;
+    BEFORE_UPDATE = 2;
+    AFTER_UPDATE = 3;
+    BEFORE_DELETE = 4;
+    AFTER_DELETE = 5;
+    BEFORE_VIEW = 6;
+  }
+
+  message Initiate {
+    HookPoint point = 1;
+    string filter = 2;
+  }
+  message CallResult {
+    uint64 call_id = 1;
+    oneof result {
+      ObjectEdits response = 2;
+      Error error = 3;
+    }
+  }
+  oneof message {
+    Initiate initiate = 1;
+    CallResult result = 2;
+  }
+}
+message RegHookReply {
+  uint64 call_id = 1;
+  Object object = 2;
+  optional Object old_object = 3;
+  optional string session = 4;
+}
+
+message RegFunctionRequest {
+  message Initiate { string name = 1; }
+  message CallResult {
+    uint64 call_id = 1;
+    oneof result {
+      bytes response = 2;
+      Error error = 3;
+    }
+  }
+  oneof message {
+    Initiate initiate = 1;
+    CallResult result = 2;
+  }
+}
+message RegFunctionReply {
+  uint64 call_id = 1;
+  map<string, bytes> arguments = 2;
+  string session = 3;
+}
+
+message CallFunctionRequest {
+  string name = 1;
+  map<string, bytes> arguments = 2;
+}
+message CallFunctionReply { bytes result = 1; }

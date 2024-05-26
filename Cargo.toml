@@ -1,0 +1,36 @@
+[package]
+name = "novi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { version = "1.0.83", features = ["backtrace"] }
+arc-swap = "1.7.1"
+argon2 = "0.5.3"
+base64 = "0.22.1"
+chrono = { version = "0.4.38", features = ["serde"] }
+dashmap = "5.5.3"
+deadpool = "0.12.1"
+deadpool-postgres = { version = "0.13.2", features = ["serde"] }
+deadpool-redis = { version = "0.15.1", features = ["rt_tokio_1", "serde"] }
+nom = "7.1.3"
+once_cell = "1.19.0"
+prost = "0.12.6"
+prost-types = "0.12.6"
+rand = "0.8.5"
+redis = { version = "0.25.3", features = ["tokio-comp"] }
+serde = { version = "1.0.201", features = ["derive"] }
+serde_json = "1.0.117"
+serde_yaml = "0.9.34"
+slab = "0.4.9"
+strum = { version = "0.26.2", features = ["derive"] }
+tokio = { version = "1.37.0", features = ["rt-multi-thread", "macros", "fs"] }
+tokio-postgres = { version = "0.7.10", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
+tokio-stream = { version = "0.1.15", features = ["net"] }
+tonic = "0.11.0"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+uuid = { version = "1.8.0", features = ["v4", "serde"] }
+
+[build-dependencies]
+tonic-build = "0.11.0"

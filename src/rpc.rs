@@ -208,7 +208,10 @@ impl proto::novi_server::Novi for RpcFacade {
         &self,
         req: Request<proto::NewSessionRequest>,
     ) -> RpcResult<proto::NewSessionReply> {
-        let req = req.into_inner();
+        let (_, ext, req) = req.into_parts();
+        if req.lock.is_none() && !self.0.extract_identity(&ext).await?.is_admin() {
+            bail!(@PermissionDenied "only admin can create unlocked session");
+        }
         let (token, _) = self.0.new_session(req.lock).await?;
         Ok(Response::new(proto::NewSessionReply {
             token: token.to_string(),

@@ -187,12 +187,15 @@ impl Novi {
         let user = self.get_user(id).await?;
         user.load().verify(password)?;
 
-        let identity = Arc::new(Identity::new_user(
+        Ok(self.login_as(user))
+    }
+
+    pub fn login_as(&self, user: UserRef) -> Arc<Identity> {
+        Arc::new(Identity::new_user(
             user,
             self.guest_user.clone(),
             Some(Utc::now() + chrono::Duration::days(7)),
-        ));
-        Ok(identity)
+        ))
     }
 }
 

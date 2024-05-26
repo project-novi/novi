@@ -173,6 +173,23 @@ impl proto::novi_server::Novi for RpcFacade {
         }))
     }
 
+    async fn login_as(
+        &self,
+        req: Request<proto::LoginAsRequest>,
+    ) -> RpcResult<proto::LoginAsReply> {
+        let (_, ext, req) = req.into_parts();
+        if !self.0.extract_identity(&ext).await?.is_admin() {
+            bail!(@PermissionDenied "only admin can login as other users");
+        }
+        let user = self.0.novi.get_user(required(req.user)?.into()).await?;
+        let identity = self.0.novi.login_as(user);
+        let token = IdentityToken::new();
+        identity.save_to_db(&self.0.novi, &token).await?;
+        Ok(Response::new(proto::LoginAsReply {
+            identity: token.to_string(),
+        }))
+    }
+
     async fn use_master_key(
         &self,
         req: Request<proto::UseMasterKeyRequest>,

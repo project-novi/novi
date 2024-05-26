@@ -37,6 +37,7 @@ message Scopes { repeated string scopes = 1; }
 
 service Novi {
   rpc Login(LoginRequest) returns (LoginReply);
+  rpc LoginAs(LoginAsRequest) returns (LoginAsReply);
   rpc UseMasterKey(UseMasterKeyRequest) returns (UseMasterKeyReply);
 
   rpc NewSession(NewSessionRequest) returns (NewSessionReply);
@@ -66,6 +67,9 @@ message LoginRequest {
   string password = 2;
 }
 message LoginReply { string identity = 1; }
+
+message LoginAsRequest { UUID user = 1; }
+message LoginAsReply { string identity = 1; }
 
 message UseMasterKeyRequest { string key = 1; }
 message UseMasterKeyReply { string identity = 1; }

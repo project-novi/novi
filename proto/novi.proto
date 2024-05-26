@@ -74,7 +74,7 @@ message LoginAsReply { string identity = 1; }
 message UseMasterKeyRequest { string key = 1; }
 message UseMasterKeyReply { string identity = 1; }
 
-message NewSessionRequest { bool lock = 1; }
+message NewSessionRequest { optional bool lock = 1; }
 message NewSessionReply { string token = 1; }
 
 message EndSessionRequest { bool commit = 1; }

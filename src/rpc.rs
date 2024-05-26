@@ -209,7 +209,7 @@ impl proto::novi_server::Novi for RpcFacade {
         req: Request<proto::NewSessionRequest>,
     ) -> RpcResult<proto::NewSessionReply> {
         let req = req.into_inner();
-        let (token, _) = self.0.new_session(Some(req.lock)).await?;
+        let (token, _) = self.0.new_session(req.lock).await?;
         Ok(Response::new(proto::NewSessionReply {
             token: token.to_string(),
         }))

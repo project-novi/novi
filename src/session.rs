@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use std::{
     collections::{HashMap, HashSet},
@@ -21,7 +20,7 @@ use crate::{
     proto::{query_request::Order, reg_hook_request::HookPoint, EventKind},
     query::args_to_ref,
     rpc::{Command, SessionStore},
-    subscribe::{DispatchWorkerCommand, SubscribeCallback},
+    subscribe::{DispatchWorkerCommand, SubscribeCallback, SubscribeOptions},
     tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags},
     token::SessionToken,
     Result,
@@ -580,15 +579,14 @@ impl Session {
         &mut self,
         store: Option<SessionStore>,
         filter: Filter,
-        checkpoint: Option<DateTime<Utc>>,
-        accept_kinds: HashSet<EventKind>,
+        options: SubscribeOptions,
         alive: Arc<AtomicBool>,
         mut callback: SubscribeCallback,
     ) -> Result<()> {
         self.identity.check_perm("subscribe")?;
 
         info!("new subscriber");
-        if let Some(ckpt) = checkpoint {
+        if let Some(ckpt) = options.checkpoint {
             let objects = self
                 .query(
                     store.clone(),
@@ -611,6 +609,10 @@ impl Session {
                 )
                 .await;
             }
+        }
+        let mut accept_kinds = 0u8;
+        for kind in options.accept_kinds {
+            accept_kinds |= 1 << kind as u8;
         }
         self.novi
             .dispatch_tx

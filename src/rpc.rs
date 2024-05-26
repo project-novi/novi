@@ -25,6 +25,7 @@ use crate::{
     misc::{utc_from_timestamp, BoxFuture},
     proto::{self, query_request::Order, required, tags_from_pb, EventKind},
     session::Session,
+    subscribe::SubscribeOptions,
     token::{IdentityToken, SessionToken},
     Error, Novi, Result,
 };
@@ -386,6 +387,10 @@ impl proto::novi_server::Novi for RpcFacade {
             .into_iter()
             .filter_map(|it| EventKind::try_from(it).ok())
             .collect();
+        let options = SubscribeOptions {
+            checkpoint,
+            accept_kinds,
+        };
 
         self.0
             .submit(ext, move |session, store| {
@@ -395,8 +400,7 @@ impl proto::novi_server::Novi for RpcFacade {
                         .subscribe(
                             Some(store),
                             filter,
-                            checkpoint,
-                            accept_kinds,
+                            options,
                             alive.clone(),
                             Box::new(move |object, kind| {
                                 let tx = tx.clone();

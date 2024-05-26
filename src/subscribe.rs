@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use std::{
     collections::HashSet,
-    fmt::Display,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -23,14 +23,16 @@ use crate::{
 pub type SubscribeCallback =
     Box<dyn for<'a> FnMut(&'a Object, EventKind) -> BoxFuture<'a, ()> + Send + Sync>;
 
-impl Display for EventKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            EventKind::Create => "create",
-            EventKind::Update => "update",
-            EventKind::Delete => "delete",
-        };
-        write!(f, "{s}")
+pub struct SubscribeOptions {
+    pub checkpoint: Option<DateTime<Utc>>,
+    pub accept_kinds: Vec<EventKind>,
+}
+impl Default for SubscribeOptions {
+    fn default() -> Self {
+        Self {
+            checkpoint: None,
+            accept_kinds: vec![EventKind::Create, EventKind::Update, EventKind::Delete],
+        }
     }
 }
 
@@ -43,7 +45,7 @@ pub(crate) enum DispatchWorkerCommand {
     NewSub {
         alive: Arc<AtomicBool>,
         filter: Filter,
-        accept_kinds: HashSet<EventKind>,
+        accept_kinds: u8,
         callback: SubscribeCallback,
     },
 }
@@ -52,7 +54,7 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
     struct Subscriber {
         alive: Arc<AtomicBool>,
         filter: Filter,
-        accept_kinds: HashSet<EventKind>,
+        accept_kinds: u8,
         callback: SubscribeCallback,
     }
     let mut subscribers = Vec::new();
@@ -85,7 +87,7 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                         continue;
                     }
                     i += 1;
-                    if sub.accept_kinds.contains(&kind)
+                    if sub.accept_kinds & (1 << kind as u8) != 0
                         && sub.filter.matches(&object, &deleted_tags)
                     {
                         // Run the BeforeView hooks manually since we're not in a session

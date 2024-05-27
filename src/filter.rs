@@ -413,7 +413,6 @@ impl Default for QueryOptions {
 impl Filter {
     pub fn query(&self, identity: &Identity, options: QueryOptions) -> (String, PgArguments) {
         let mut q = QueryBuilder::new("object");
-        q.add_select("*");
         self.build_sql(&mut q, identity, options.checkpoint);
 
         q.order(match options.order {

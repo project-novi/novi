@@ -9,7 +9,7 @@ pub fn pg_pattern_escape(s: &str) -> String {
 
 pub struct QueryBuilder {
     table: &'static str,
-    selects: Vec<String>,
+    selects: String,
     wheres: Vec<String>,
     pub order: Option<String>,
     limit: Option<u32>,
@@ -21,7 +21,7 @@ impl QueryBuilder {
     pub fn new(table: &'static str) -> Self {
         Self {
             table,
-            selects: Vec::new(),
+            selects: "*".to_owned(),
             wheres: Vec::new(),
             limit: None,
             offset: None,
@@ -30,8 +30,8 @@ impl QueryBuilder {
         }
     }
 
-    pub fn add_select(&mut self, field: impl Into<String>) -> &mut Self {
-        self.selects.push(field.into());
+    pub fn select(&mut self, selects: impl Into<String>) -> &mut Self {
+        self.selects = selects.into();
         self
     }
 
@@ -70,11 +70,7 @@ impl QueryBuilder {
         let mut res = "select ".to_owned();
         assert!(!self.selects.is_empty());
 
-        res.push_str(&self.selects[0]);
-        for select in &self.selects[1..] {
-            res.push(',');
-            res.push_str(select);
-        }
+        res.push_str(&self.selects);
         res.push_str(" from ");
         res += self.table;
         let mut it = self.wheres.iter();

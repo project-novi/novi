@@ -73,7 +73,7 @@ impl Novi {
         let guest_user = Arc::new(User {
             id: None,
             name: "guest".to_owned(),
-            password: String::new(),
+            password: None,
 
             roles: HashSet::new(),
             perms: config.guest_permissions.iter().cloned().collect(),

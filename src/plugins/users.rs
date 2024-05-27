@@ -23,8 +23,10 @@ async fn add_hook(novi: &Novi, point: HookPoint) -> Result<()> {
             Box::pin(async move {
                 let new_user = User::try_from(args.object.clone())?;
                 new_user.validate()?;
-                if PasswordHash::new(&new_user.password).is_err() {
-                    bail!(@InvalidArgument "invalid password");
+                if let Some(hash) = &new_user.password {
+                    if PasswordHash::new(hash).is_err() {
+                        bail!(@InvalidArgument "invalid password");
+                    }
                 }
                 let new_user = Arc::new(new_user);
 

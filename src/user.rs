@@ -15,7 +15,7 @@ pub static INTERNAL_USER: Lazy<UserRef> = Lazy::new(|| {
     Arc::new(ArcSwap::from_pointee(User {
         id: None,
         name: "internal".to_owned(),
-        password: String::new(),
+        password: None,
         roles: std::iter::once("admin".to_owned()).collect(),
         perms: HashSet::new(),
         tags: HashMap::new(),
@@ -25,7 +25,7 @@ pub static INTERNAL_USER: Lazy<UserRef> = Lazy::new(|| {
 pub struct User {
     pub id: Option<Uuid>,
     pub name: String,
-    pub password: String,
+    pub password: Option<String>,
 
     pub roles: HashSet<String>,
     pub perms: HashSet<String>,
@@ -39,10 +39,13 @@ impl User {
     }
 
     pub fn verify(&self, password: &str) -> Result<()> {
+        let Some(password_hash) = &self.password else {
+            bail!(@InvalidCredentials "password incorrect")
+        };
         if Argon2::default()
             .verify_password(
                 password.as_bytes(),
-                &PasswordHash::new(&self.password).unwrap(),
+                &PasswordHash::new(password_hash).unwrap(),
             )
             .is_err()
         {
@@ -101,7 +104,7 @@ impl Model for User {
         let mut tags = self.tags.clone();
         tags.insert("@user".to_owned(), None);
         tags.insert("@user.name".to_owned(), Some(self.name.clone()));
-        tags.insert("@user.password".to_owned(), Some(self.password.clone()));
+        tags.insert("@user.password".to_owned(), self.password.clone());
         for role in &self.roles {
             tags.insert(format!("@user.role:{role}"), None);
         }
@@ -122,7 +125,7 @@ impl TryFrom<Object> for User {
 
             value.remove_tag("@user")?;
             let name = value.remove_tag("@user.name")?.value?;
-            let password = value.remove_tag("@user.password")?.value?;
+            let password = value.remove_tag("@user.password")?.value;
 
             let mut roles = HashSet::new();
             let mut perms = HashSet::new();

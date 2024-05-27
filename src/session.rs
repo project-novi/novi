@@ -589,7 +589,7 @@ impl Session {
         if let Some(ckpt) = options.checkpoint {
             let objects = self
                 .query(
-                    store.clone(),
+                    store,
                     filter.clone(),
                     QueryOptions {
                         checkpoint: Some(ckpt),

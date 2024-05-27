@@ -1,3 +1,4 @@
+use serde_json::json;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -9,7 +10,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    anyhow,
+    anyhow, bail,
     filter::{Filter, QueryOptions},
     hook::{HookArgs, ObjectEdits},
     misc::{now_utc, wrap_nom_from_str},
@@ -290,6 +291,7 @@ async fn add_imply_hook(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()
     .await;
     Ok(())
 }
+
 async fn add_any_hook(novi: &Novi, point: HookPoint, implies: Arc<RwLock<Implies>>) {
     novi.register_hook(
         point,
@@ -305,6 +307,38 @@ async fn add_any_hook(novi: &Novi, point: HookPoint, implies: Arc<RwLock<Implies
     )
     .await;
 }
+
+async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()> {
+    novi.register_function("imply.apply".to_owned(), {
+        let implies = implies.clone();
+        Box::new(move |(session, _), mut args: HashMap<String, Vec<u8>>| {
+            let implies = implies.clone();
+            Box::pin(async move {
+                session.identity.check_perm("imply.apply")?;
+                let Some(imply) = args
+                    .remove("imply")
+                    .and_then(|it| String::from_utf8(it).ok())
+                else {
+                    bail!(@InvalidArgument "missing imply argument")
+                };
+                let imply: Imply = imply.parse()?;
+                let affected = implies
+                    .read()
+                    .await
+                    .apply_new_imply(session, &imply)
+                    .await?;
+
+                Ok(json!({
+                    "affected": affected,
+                })
+                .to_string()
+                .into_bytes())
+            })
+        })
+    })
+    .await
+}
+
 pub async fn init(novi: &Novi) -> Result<()> {
     let mut session = novi.internal_session(None).await?;
     let imply_objs = session
@@ -321,6 +355,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
     add_imply_hook(novi, implies.clone()).await?;
     add_any_hook(novi, HookPoint::BeforeCreate, implies.clone()).await;
     add_any_hook(novi, HookPoint::BeforeUpdate, implies.clone()).await;
+    add_imply_function(novi, implies.clone()).await?;
 
     Ok(())
 }

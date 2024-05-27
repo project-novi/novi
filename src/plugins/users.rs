@@ -50,5 +50,21 @@ async fn add_hook(novi: &Novi, point: HookPoint) -> Result<()> {
 pub async fn init(novi: &Novi) -> Result<()> {
     add_hook(novi, HookPoint::BeforeCreate).await?;
     add_hook(novi, HookPoint::BeforeUpdate).await?;
+
+    novi.register_hook(
+        HookPoint::BeforeView,
+        "@user".parse()?,
+        Box::new(|args: HookArgs| {
+            Box::pin(async move {
+                let mut edits = ObjectEdits::default();
+                if args.object.tags.contains_key("@user.password") {
+                    edits.delete("@user.password".to_owned());
+                }
+                Ok(edits)
+            })
+        }),
+    )
+    .await;
+
     Ok(())
 }

@@ -56,7 +56,7 @@ impl User {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if !(4..=20).contains(&self.name.len()) {
+        if !self.roles.contains("plugin") && !(4..=20).contains(&self.name.len()) {
             bail!(@InvalidArgument "name must be 4-20 characters long");
         }
         if !self
@@ -158,8 +158,6 @@ impl TryFrom<Object> for User {
         }
 
         let id = value.id;
-        inner(value).ok_or_else(
-            || anyhow!(@InvalidObject ("id" => id.to_string()) "not a user"),
-        )
+        inner(value).ok_or_else(|| anyhow!(@InvalidObject ("id" => id.to_string()) "not a user"))
     }
 }

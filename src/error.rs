@@ -240,6 +240,7 @@ pub enum ErrorKind {
     PermissionDenied,
     IdentityExpired,
 
+    FileNotFound,
     FunctionNotFound,
     ObjectNotFound,
 
@@ -257,7 +258,7 @@ impl ErrorKind {
             ErrorKind::PermissionDenied => Code::PermissionDenied,
             ErrorKind::IdentityExpired => Code::Unauthenticated,
 
-            ErrorKind::FunctionNotFound | ErrorKind::ObjectNotFound => Code::NotFound,
+            ErrorKind::FileNotFound | ErrorKind::FunctionNotFound | ErrorKind::ObjectNotFound => Code::NotFound,
 
             ErrorKind::InvalidArgument | ErrorKind::InvalidTag | ErrorKind::InvalidObject => {
                 Code::InvalidArgument

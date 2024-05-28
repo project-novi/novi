@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
 
     let facade = rpc::RpcFacade::new(server);
 
-    let socket_path = "novi.socket";
+    let socket_path = "/tmp/novi.socket";
     let _ = std::fs::remove_file(socket_path);
     let uds = UnixListener::bind(socket_path)?;
     Server::builder()

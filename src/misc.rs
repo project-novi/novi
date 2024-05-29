@@ -1,5 +1,5 @@
 use chrono::{offset::LocalResult, DateTime, SubsecRound, TimeZone, Utc};
-use std::{pin::Pin, future::Future};
+use std::{future::Future, pin::Pin};
 
 use crate::{anyhow, bail, Result};
 

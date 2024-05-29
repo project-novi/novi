@@ -189,7 +189,7 @@ message RegFunctionRequest {
   message CallResult {
     uint64 call_id = 1;
     oneof result {
-      bytes response = 2;
+      string response = 2;
       Error error = 3;
     }
   }
@@ -200,12 +200,12 @@ message RegFunctionRequest {
 }
 message RegFunctionReply {
   uint64 call_id = 1;
-  map<string, bytes> arguments = 2;
+  string arguments = 2;
   string session = 3;
 }
 
 message CallFunctionRequest {
   string name = 1;
-  map<string, bytes> arguments = 2;
+  string arguments = 2;
 }
-message CallFunctionReply { bytes result = 1; }
+message CallFunctionReply { string result = 1; }

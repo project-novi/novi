@@ -1,5 +1,4 @@
-use serde_json::json;
-use tokio_postgres::types::Type;
+use serde_json::{json, Map};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -7,6 +6,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::RwLock;
+use tokio_postgres::types::Type;
 use tracing::info;
 use uuid::Uuid;
 
@@ -159,7 +159,12 @@ impl Imply {
                 }
                 Action::Set(val) => {
                     write!(ors, " or not (tags ? {tag})").unwrap();
-                    write!(ors, " or (tags->{tag}->>'v' != {})", q.bind(val.to_owned(), Type::TEXT)).unwrap();
+                    write!(
+                        ors,
+                        " or (tags->{tag}->>'v' != {})",
+                        q.bind(val.to_owned(), Type::TEXT)
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -313,30 +318,27 @@ async fn add_any_hook(novi: &Novi, point: HookPoint, implies: Arc<RwLock<Implies
 async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()> {
     novi.register_function("imply.apply".to_owned(), {
         let implies = implies.clone();
-        Box::new(move |(session, _), mut args: HashMap<String, Vec<u8>>| {
-            let implies = implies.clone();
-            Box::pin(async move {
-                session.identity.check_perm("imply.apply")?;
-                let Some(imply) = args
-                    .remove("imply")
-                    .and_then(|it| String::from_utf8(it).ok())
-                else {
-                    bail!(@InvalidArgument "missing imply argument")
-                };
-                let imply: Imply = imply.parse()?;
-                let affected = implies
-                    .read()
-                    .await
-                    .apply_new_imply(session, &imply)
-                    .await?;
+        Box::new(
+            move |(session, _), args: Map<String, serde_json::Value>| {
+                let implies = implies.clone();
+                Box::pin(async move {
+                    session.identity.check_perm("imply.apply")?;
+                    let Some(imply) = args.get("imply").and_then(|it| it.as_str()) else {
+                        bail!(@InvalidArgument "missing imply argument")
+                    };
+                    let imply: Imply = imply.parse()?;
+                    let affected = implies
+                        .read()
+                        .await
+                        .apply_new_imply(session, &imply)
+                        .await?;
 
-                Ok(json!({
-                    "affected": affected,
+                    Ok(json!({
+                        "affected": affected,
+                    }))
                 })
-                .to_string()
-                .into_bytes())
-            })
-        })
+            },
+        )
     })
     .await
 }

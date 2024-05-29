@@ -1,7 +1,6 @@
 use dashmap::DashMap;
 use slab::Slab;
 use std::{
-    collections::HashMap,
     ops::Deref,
     str::FromStr,
     sync::{
@@ -18,16 +17,7 @@ use tonic::{Extensions, Request, Response, Status, Streaming};
 use tracing::{debug, info, warn};
 
 use crate::{
-    anyhow, bail,
-    filter::{Filter, QueryOptions, TimeRange},
-    hook::{HookArgs, ObjectEdits},
-    identity::{Identity, IDENTITIES},
-    misc::{utc_from_timestamp, BoxFuture},
-    proto::{self, query_request::Order, required, tags_from_pb, EventKind},
-    session::Session,
-    subscribe::SubscribeOptions,
-    token::{IdentityToken, SessionToken},
-    Error, Novi, Result,
+    anyhow, bail, filter::{Filter, QueryOptions, TimeRange}, function::{parse_arguments, parse_json, Arguments}, hook::{HookArgs, ObjectEdits}, identity::{Identity, IDENTITIES}, misc::{utc_from_timestamp, BoxFuture}, proto::{self, query_request::Order, required, tags_from_pb, EventKind}, session::Session, subscribe::SubscribeOptions, token::{IdentityToken, SessionToken}, Error, Novi, Result
 };
 
 pub fn interceptor(mut req: Request<()>) -> Result<Request<()>, Status> {
@@ -576,8 +566,10 @@ impl proto::novi_server::Novi for RpcFacade {
         info!(name, "register function");
 
         let (stream_tx, stream_rx) = mpsc::channel::<Result<proto::RegFunctionReply, Status>>(8);
-        let (call_tx, mut call_rx) =
-            mpsc::channel::<(proto::RegFunctionReply, oneshot::Sender<Result<Vec<u8>>>)>(32);
+        let (call_tx, mut call_rx) = mpsc::channel::<(
+            proto::RegFunctionReply,
+            oneshot::Sender<Result<serde_json::Value>>,
+        )>(32);
         tokio::spawn({
             let novi = self.0.novi.clone();
             let name = name.clone();
@@ -608,6 +600,7 @@ impl proto::novi_server::Novi for RpcFacade {
                                     Some(call_result::Result::Error(err)) => Err(Error::from_pb(err)),
                                     _ => Err(anyhow!(@InvalidArgument "invalid response from client")),
                                 };
+                                let result = result.and_then(parse_json);
                                 let _ = tx.send(result);
                             } else {
                                 warn!(call_id = result.call_id, "invalid call id from hook client");
@@ -627,14 +620,15 @@ impl proto::novi_server::Novi for RpcFacade {
                 name,
                 Box::new(
                     move |(session, store): (&mut Session, SessionStore),
-                          arguments: HashMap<String, Vec<u8>>| {
+                          arguments: Arguments| {
                         let token = session.token().to_string();
                         let call_tx = call_tx.clone();
                         Box::pin(session.yield_self(store, async move {
-                            let (result_tx, result_rx) = oneshot::channel::<Result<Vec<u8>>>();
+                            let (result_tx, result_rx) =
+                                oneshot::channel::<Result<serde_json::Value>>();
                             let reply = proto::RegFunctionReply {
                                 call_id: 0,
-                                arguments,
+                                arguments: serde_json::Value::Object(arguments).to_string(),
                                 session: token,
                             };
                             if call_tx.send((reply, result_tx)).await.is_err() {
@@ -661,9 +655,11 @@ impl proto::novi_server::Novi for RpcFacade {
             .submit(ext, move |session, store| {
                 Box::pin(async move {
                     let result = session
-                        .call_function(store, &req.name, req.arguments)
+                        .call_function(store, &req.name, parse_arguments(req.arguments)?)
                         .await?;
-                    Ok(proto::CallFunctionReply { result })
+                    Ok(proto::CallFunctionReply {
+                        result: result.to_string(),
+                    })
                 })
             })
             .await

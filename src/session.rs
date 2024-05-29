@@ -1,6 +1,6 @@
 use deadpool_postgres::Transaction;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     future::Future,
     pin::pin,
     sync::{atomic::AtomicBool, Arc},
@@ -11,19 +11,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    anyhow, bail,
-    filter::{Filter, QueryOptions},
-    hook::{HookArgs, HOOK_POINT_COUNT},
-    identity::Identity,
-    novi::Novi,
-    object::Object,
-    proto::{query_request::Order, reg_hook_request::HookPoint, EventKind},
-    query::args_to_ref,
-    rpc::{Command, SessionStore},
-    subscribe::{DispatchWorkerCommand, SubscribeCallback, SubscribeOptions},
-    tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags},
-    token::SessionToken,
-    Result,
+    anyhow, bail, filter::{Filter, QueryOptions}, function::Arguments, hook::{HookArgs, HOOK_POINT_COUNT}, identity::Identity, novi::Novi, object::Object, proto::{query_request::Order, reg_hook_request::HookPoint, EventKind}, query::args_to_ref, rpc::{Command, SessionStore}, subscribe::{DispatchWorkerCommand, SubscribeCallback, SubscribeOptions}, tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags}, token::SessionToken, Result
 };
 
 type PgConnection = deadpool::managed::Object<deadpool_postgres::Manager>;
@@ -634,8 +622,8 @@ impl Session {
         &mut self,
         store: SessionStore,
         name: &str,
-        arguments: HashMap<String, Vec<u8>>,
-    ) -> Result<Vec<u8>> {
+        arguments: Arguments,
+    ) -> Result<serde_json::Value> {
         let novi = self.novi.clone();
         let Some(function) = novi.functions.get(name) else {
             bail!(@FunctionNotFound "function not found")

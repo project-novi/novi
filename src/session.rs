@@ -335,7 +335,9 @@ impl Session {
     fn check_property_perm<'a>(&self, tags: impl Iterator<Item = &'a str>) -> Result<()> {
         if !self.identity.has_perm("prop") {
             for tag in tags {
-                if let Some(prop) = tag.strip_prefix('@') {
+                if tag == "@" {
+                    self.identity.check_perm("prop.content")?;
+                } else if let Some(prop) = tag.strip_prefix('@') {
                     self.identity.check_perm(&format!("prop:{prop}"))?;
                 }
             }

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
+use tokio_postgres::types::Type;
 use std::{
     collections::HashSet,
     fmt::{self, Display, Formatter},
@@ -411,7 +412,7 @@ impl Default for QueryOptions {
 }
 
 impl Filter {
-    pub fn query(&self, identity: &Identity, options: QueryOptions) -> (String, PgArguments) {
+    pub fn query(&self, identity: &Identity, options: QueryOptions) -> (String, PgArguments, Vec<Type>) {
         let mut q = QueryBuilder::new("object");
         self.build_sql(&mut q, identity, options.checkpoint);
 
@@ -423,11 +424,11 @@ impl Filter {
         });
         let mut add_range = |field: &str, range: TimeRange| {
             if let Some(lower) = range.0 {
-                let clause = format!("{field} >= {}", q.bind(lower));
+                let clause = format!("{field} >= {}", q.bind(lower, Type::TIMESTAMPTZ));
                 q.add_where(clause);
             }
             if let Some(upper) = range.1 {
-                let clause = format!("{field} <= {}", q.bind(upper));
+                let clause = format!("{field} <= {}", q.bind(upper, Type::TIMESTAMPTZ));
                 q.add_where(clause);
             }
         };
@@ -450,7 +451,7 @@ impl Filter {
         use std::fmt::Write;
         match self {
             Self::Atom(tag, kind) => {
-                let tag = q.bind(tag.clone());
+                let tag = q.bind(tag.clone(), Type::TEXT);
                 match kind {
                     FilterKind::Has => {
                         write!(w, "(tags ? {tag})")?;
@@ -468,7 +469,7 @@ impl Filter {
                         *w += "false";
                     }
                     FilterKind::Equals(value, eq) => {
-                        let v = q.bind(value.clone());
+                        let v = q.bind_string(value.clone());
                         if *eq {
                             write!(w, "(tags->{tag}->>'v' = {v})").unwrap();
                         } else {
@@ -476,7 +477,7 @@ impl Filter {
                         }
                     }
                     FilterKind::Contains(value, eq) => {
-                        let v = q.bind(pg_pattern_escape(value));
+                        let v = q.bind_string(pg_pattern_escape(value));
                         if *eq {
                             write!(w, "(tags->{tag}->>'v' like '%' || {v} || '%')").unwrap();
                         } else {
@@ -520,17 +521,17 @@ impl Filter {
         checkpoint: Option<DateTime<Utc>>,
     ) {
         let mut w = String::new();
-        let checkpoint = checkpoint.map(|it| q.bind(it));
+        let checkpoint = checkpoint.map(|it| q.bind(it, Type::TIMESTAMPTZ));
         self.add_wheres_inner(q, &mut w, checkpoint.as_deref())
             .unwrap();
         q.add_where_raw(w);
 
         if !identity.is_admin() {
             use std::fmt::Write;
-            let perms = q.bind(identity.permissions());
+            let perms = q.bind(identity.permissions(), Type::TEXT_ARRAY);
             let mut s = format!("{perms} @> access_perms");
             if let Some(id) = identity.user.load().id {
-                write!(s, " or creator = {}", q.bind(id)).unwrap();
+                write!(s, " or creator = {}", q.bind(id, Type::UUID)).unwrap();
             }
             q.add_where(s);
         }

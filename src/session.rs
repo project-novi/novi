@@ -559,9 +559,10 @@ impl Session {
     ) -> Result<Vec<Object>> {
         self.identity.check_perm("object.query")?;
 
-        let (sql, args) = filter.query(&self.identity, options);
+        let (sql, args, types) = filter.query(&self.identity, options);
 
-        let rows = self.connection.query(&sql, &args_to_ref(&args)).await?;
+        let stmt = self.prepare_stmt(&sql, &types).await?;
+        let rows = self.connection.query(&stmt, &args_to_ref(&args)).await?;
         let mut objects = Vec::with_capacity(rows.len());
 
         for row in rows {

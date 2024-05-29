@@ -1,4 +1,5 @@
 use serde_json::json;
+use tokio_postgres::types::Type;
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -151,14 +152,14 @@ impl Imply {
         self.condition.build_sql(q, &novi.internal_identity, None);
         let mut ors = "false".to_owned();
         for cons in &self.consequences {
-            let tag = q.bind(cons.tag.clone());
+            let tag = q.bind_string(cons.tag.clone());
             match &cons.action {
                 Action::Delete => {
                     write!(ors, " or (tags ? {tag})").unwrap();
                 }
                 Action::Set(val) => {
                     write!(ors, " or not (tags ? {tag})").unwrap();
-                    write!(ors, " or (tags->{tag}->>'v' != {})", q.bind(val.to_owned())).unwrap();
+                    write!(ors, " or (tags->{tag}->>'v' != {})", q.bind(val.to_owned(), Type::TEXT)).unwrap();
                 }
             }
         }
@@ -227,11 +228,12 @@ impl Implies {
         let mut q = QueryBuilder::new("object");
         imply.build_sql_to_find_unsatified(&session.novi, &mut q);
 
-        let (sql, args) = q.build();
+        let (sql, args, types) = q.build();
         session.require_locked()?;
 
         let mut unsatisfied = Vec::new();
-        for row in session.connection.query(&sql, &args_to_ref(&args)).await? {
+        let stmt = session.connection.prepare_typed(&sql, &types).await?;
+        for row in session.connection.query(&stmt, &args_to_ref(&args)).await? {
             unsatisfied.push(Object::from_row(row)?);
         }
 

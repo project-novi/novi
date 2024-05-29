@@ -1,5 +1,5 @@
-use std::fmt::Write;
-use tokio_postgres::types::ToSql;
+use std::fmt::{Debug, Write};
+use tokio_postgres::types::{ToSql, Type};
 
 pub type PgArguments = Vec<Box<dyn ToSql + Send + Sync>>;
 
@@ -15,6 +15,7 @@ pub struct QueryBuilder {
     limit: Option<u32>,
     offset: Option<u32>,
     args: PgArguments,
+    types: Vec<Type>,
 }
 
 impl QueryBuilder {
@@ -27,6 +28,7 @@ impl QueryBuilder {
             offset: None,
             order: None,
             args: PgArguments::default(),
+            types: Vec::new(),
         }
     }
 
@@ -45,10 +47,15 @@ impl QueryBuilder {
         self
     }
 
-    pub fn bind(&mut self, value: impl ToSql + Send + Sync + 'static) -> String {
+    pub fn bind(&mut self, value: impl ToSql + Send + Sync + Debug + 'static, ty: Type) -> String {
         // TODO: optimize
         self.args.push(Box::new(value));
+        self.types.push(ty);
         format!("${}", self.args.len())
+    }
+
+    pub fn bind_string(&mut self, value: String) -> String {
+        self.bind(value, Type::TEXT)
     }
 
     pub fn order(&mut self, order: impl Into<String>) -> &mut Self {
@@ -98,8 +105,8 @@ impl QueryBuilder {
         res
     }
 
-    pub fn build(self) -> (String, PgArguments) {
-        (self.build_stmt(), self.args)
+    pub fn build(self) -> (String, PgArguments, Vec<Type>) {
+        (self.build_stmt(), self.args, self.types)
     }
 }
 

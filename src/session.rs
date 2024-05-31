@@ -1,6 +1,6 @@
 use deadpool_postgres::Transaction;
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     future::Future,
     pin::pin,
     sync::{atomic::AtomicBool, Arc},
@@ -11,7 +11,20 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    anyhow, bail, filter::{Filter, QueryOptions}, function::Arguments, hook::{HookArgs, HOOK_POINT_COUNT}, identity::Identity, novi::Novi, object::Object, proto::{query_request::Order, reg_hook_request::HookPoint, EventKind}, query::args_to_ref, rpc::{Command, SessionStore}, subscribe::{DispatchWorkerCommand, SubscribeCallback, SubscribeOptions}, tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags}, token::SessionToken, Result
+    anyhow, bail,
+    filter::{Filter, QueryOptions},
+    function::Arguments,
+    hook::{HookArgs, HOOK_POINT_COUNT},
+    identity::Identity,
+    novi::Novi,
+    object::Object,
+    proto::{query_request::Order, reg_hook_request::HookPoint, EventKind},
+    query::args_to_ref,
+    rpc::{Command, SessionStore},
+    subscribe::{DispatchWorkerCommand, SubscribeCallback, SubscribeOptions},
+    tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags},
+    token::SessionToken,
+    Result,
 };
 
 type PgConnection = deadpool::managed::Object<deadpool_postgres::Manager>;
@@ -146,7 +159,7 @@ impl Session {
         freeze: bool,
         object: &mut Object,
         old_object: Option<&Object>,
-        deleted_tags: &HashSet<String>,
+        deleted_tags: &BTreeSet<String>,
     ) -> Result<()> {
         // On editing this, also edit subscribe::dispatch_worker
         let shared = self.novi.clone();
@@ -179,7 +192,7 @@ impl Session {
         freeze: bool,
         object: &mut Object,
         old_object: Option<&Object>,
-        deleted_tags: &HashSet<String>,
+        deleted_tags: &BTreeSet<String>,
     ) -> Result<()> {
         // Check reentrancy
         if self.running_hooks[point as usize] {
@@ -210,13 +223,13 @@ impl Session {
             false,
             &mut object,
             None,
-            &HashSet::new(),
+            &Default::default(),
         )
         .await?;
         Ok(object)
     }
 
-    async fn object_event(&self, kind: EventKind, object: Object, deleted_tags: HashSet<String>) {
+    async fn object_event(&self, kind: EventKind, object: Object, deleted_tags: BTreeSet<String>) {
         if let Err(err) = self
             .novi
             .dispatch_tx
@@ -251,7 +264,7 @@ impl Session {
         store: Option<SessionStore>,
         object: &mut Object,
         old_object: Object,
-        deleted_tags: HashSet<String>,
+        deleted_tags: BTreeSet<String>,
     ) -> Result<()> {
         self.run_hook(
             store.clone(),
@@ -367,7 +380,7 @@ impl Session {
             false,
             &mut object,
             None,
-            &HashSet::new(),
+            &Default::default(),
         )
         .await?;
 
@@ -393,10 +406,10 @@ impl Session {
             true,
             &mut object,
             None,
-            &HashSet::new(),
+            &Default::default(),
         )
         .await?;
-        self.object_event(EventKind::Create, object.clone(), HashSet::new())
+        self.object_event(EventKind::Create, object.clone(), Default::default())
             .await;
 
         self.return_object(store, object).await
@@ -443,7 +456,7 @@ impl Session {
             return self.return_object(store, object).await;
         }
 
-        self.submit_change(store.clone(), &mut object, old_object, HashSet::new())
+        self.submit_change(store.clone(), &mut object, old_object, Default::default())
             .await?;
         self.return_object(store, object).await
     }
@@ -518,7 +531,7 @@ impl Session {
             true,
             &mut object,
             None,
-            &HashSet::new(),
+            &Default::default(),
         )
         .await?;
 
@@ -532,10 +545,10 @@ impl Session {
             true,
             &mut object,
             None,
-            &HashSet::new(),
+            &Default::default(),
         )
         .await?;
-        self.object_event(EventKind::Delete, object, HashSet::new())
+        self.object_event(EventKind::Delete, object, Default::default())
             .await;
 
         Ok(())

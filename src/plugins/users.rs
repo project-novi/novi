@@ -18,9 +18,10 @@ pub(crate) static USERS: Lazy<RwLock<HashMap<Uuid, UserRef>>> = Lazy::new(Defaul
 async fn add_hook(novi: &Novi, point: HookPoint) -> Result<()> {
     novi.register_hook(
         point,
-        "~@user".parse()?,
+        "~@user*".parse()?,
         Box::new(|args: HookArgs| {
             Box::pin(async move {
+                println!("{} user updating", args.object.id);
                 let new_user = User::try_from(args.object.clone())?;
                 new_user.validate()?;
                 if let Some(hash) = &new_user.password {

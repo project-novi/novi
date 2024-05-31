@@ -37,11 +37,6 @@ impl QueryBuilder {
         self
     }
 
-    pub fn add_where_raw(&mut self, clause: impl Into<String>) -> &mut Self {
-        self.wheres.push(clause.into());
-        self
-    }
-
     pub fn add_where(&mut self, clause: impl Into<String>) -> &mut Self {
         self.wheres.push(clause.into());
         self

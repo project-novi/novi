@@ -34,3 +34,9 @@ pub(crate) fn wrap_nom_from_str<R>(res: nom::IResult<&str, R>) -> Result<R> {
         }
     }
 }
+
+pub(crate) fn tag_bounds(scope: &str) -> (String, String) {
+    let start = format!("{scope}:");
+    let end = format!("{scope};");
+    (start, end)
+}

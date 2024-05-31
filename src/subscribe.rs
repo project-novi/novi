@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use std::{
-    collections::HashSet,
+    collections::BTreeSet,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -40,7 +40,7 @@ pub(crate) enum DispatchWorkerCommand {
     Event {
         kind: EventKind,
         object: Object,
-        deleted_tags: HashSet<String>,
+        deleted_tags: BTreeSet<String>,
     },
     NewSub {
         alive: Arc<AtomicBool>,
@@ -93,7 +93,7 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                         // Run the BeforeView hooks manually since we're not in a session
                         let hooks = novi.hooks.read().await;
                         for (filter, f) in &hooks[HookPoint::BeforeView as usize] {
-                            if !filter.matches(&object, &HashSet::new()) {
+                            if !filter.matches(&object, &Default::default()) {
                                 continue;
                             }
 

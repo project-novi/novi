@@ -1,11 +1,13 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::{bail, misc::now_utc, Result};
 
 pub type Tags = HashMap<String, Option<String>>;
-pub type TagDict = HashMap<String, TagValue>;
+
+// We use BTreeMap since we want fast access to subtags.
+pub type TagDict = BTreeMap<String, TagValue>;
 
 pub fn valid_nonspace_tag_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == ':' || c == '·' || c == '.' || c == '：'

@@ -1,10 +1,5 @@
 use serde_json::{json, Map};
-use std::{
-    borrow::Cow,
-    collections::{HashMap, HashSet},
-    str::FromStr,
-    sync::Arc,
-};
+use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 use tokio::sync::RwLock;
 use tokio_postgres::types::Type;
 use tracing::info;
@@ -123,7 +118,7 @@ impl Imply {
     /// Apply the imply to the object and return true if any changes were made.
     pub fn apply(&self, object: &Object, edits: &mut ObjectEdits) -> bool {
         // TODO: Maybe deleted_tags need to be considered as well?
-        if !self.condition.matches(object, &HashSet::new()) {
+        if !self.condition.matches(object, &Default::default()) {
             return false;
         }
 
@@ -318,27 +313,25 @@ async fn add_any_hook(novi: &Novi, point: HookPoint, implies: Arc<RwLock<Implies
 async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()> {
     novi.register_function("imply.apply".to_owned(), {
         let implies = implies.clone();
-        Box::new(
-            move |(session, _), args: Map<String, serde_json::Value>| {
-                let implies = implies.clone();
-                Box::pin(async move {
-                    session.identity.check_perm("imply.apply")?;
-                    let Some(imply) = args.get("imply").and_then(|it| it.as_str()) else {
-                        bail!(@InvalidArgument "missing imply argument")
-                    };
-                    let imply: Imply = imply.parse()?;
-                    let affected = implies
-                        .read()
-                        .await
-                        .apply_new_imply(session, &imply)
-                        .await?;
+        Box::new(move |(session, _), args: Map<String, serde_json::Value>| {
+            let implies = implies.clone();
+            Box::pin(async move {
+                session.identity.check_perm("imply.apply")?;
+                let Some(imply) = args.get("imply").and_then(|it| it.as_str()) else {
+                    bail!(@InvalidArgument "missing imply argument")
+                };
+                let imply: Imply = imply.parse()?;
+                let affected = implies
+                    .read()
+                    .await
+                    .apply_new_imply(session, &imply)
+                    .await?;
 
-                    Ok(json!({
-                        "affected": affected,
-                    }))
-                })
-            },
-        )
+                Ok(json!({
+                    "affected": affected,
+                }))
+            })
+        })
     })
     .await
 }
@@ -366,7 +359,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashSet, str::FromStr};
+    use std::str::FromStr;
     use uuid::Uuid;
 
     use crate::{hook::ObjectEdits, misc::now_utc, object::Object, tag::TagValue};
@@ -395,17 +388,17 @@ mod test {
         let mut edits = ObjectEdits::new();
 
         let imply = Imply::from_str("no => any").unwrap();
-        assert!(!imply.condition.matches(&object, &HashSet::new()));
+        assert!(!imply.condition.matches(&object, &Default::default()));
         imply.apply(&object, &mut edits);
         assert!(edits.is_empty());
 
         let imply = Imply::from_str("test => test2=wow").unwrap();
-        assert!(imply.condition.matches(&object, &HashSet::new()));
+        assert!(imply.condition.matches(&object, &Default::default()));
         imply.apply(&object, &mut edits);
         assert!(edits.is_empty());
 
         let imply = Imply::from_str("test test2=wow => test3").unwrap();
-        assert!(imply.condition.matches(&object, &HashSet::new()));
+        assert!(imply.condition.matches(&object, &Default::default()));
         imply.apply(&object, &mut edits);
         assert!(!edits.is_empty());
         edits.apply(&mut object, now_utc());
@@ -413,7 +406,7 @@ mod test {
 
         let mut edits = ObjectEdits::new();
         let imply = Imply::from_str("test3/wtf => -test2").unwrap();
-        assert!(imply.condition.matches(&object, &HashSet::new()));
+        assert!(imply.condition.matches(&object, &Default::default()));
         imply.apply(&object, &mut edits);
         edits.apply(&mut object, now_utc());
         assert!(!object.tags.contains_key("test2"));

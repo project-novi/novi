@@ -1,10 +1,13 @@
 use chrono::{DateTime, Utc};
-use std::collections::HashSet;
+use std::{
+    collections::{BTreeSet, HashSet},
+    ops::Bound,
+};
 use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::{
-    misc::now_utc,
+    misc::{now_utc, tag_bounds},
     proto::{self, uuid_to_pb},
     tag::{scope_of, TagDict, TagValue, Tags},
     Result,
@@ -75,10 +78,10 @@ impl Object {
         mut tags: Tags,
         scopes: Option<HashSet<String>>,
         force: bool,
-    ) -> Option<HashSet<String>> {
+    ) -> Option<BTreeSet<String>> {
         let time = now_utc();
         let mut updated = force;
-        let mut deleted_tags = HashSet::new();
+        let mut deleted_tags = BTreeSet::new();
 
         self.tags.retain(|tag, value| {
             if let Some(scopes) = &scopes {
@@ -113,18 +116,20 @@ impl Object {
         }
     }
 
-    pub(crate) fn delete_tags(&mut self, tags: Vec<String>) -> HashSet<String> {
+    pub(crate) fn delete_tags(&mut self, tags: Vec<String>) -> BTreeSet<String> {
         tags.into_iter()
             .filter(|it| self.tags.remove(it).is_some())
             .collect()
     }
 
     pub fn subtags<'a>(&'a self, scope: &'a str) -> impl Iterator<Item = (&str, &TagValue)> + 'a {
-        self.tags.iter().filter_map(move |(k, v)| {
-            k.strip_prefix(scope)
-                .and_then(|it| it.strip_prefix(':'))
-                .map(|it| (it, v))
-        })
+        let (start, end) = tag_bounds(scope);
+        self.tags
+            .range::<str, _>((
+                Bound::Included(start.as_str()),
+                Bound::Excluded(end.as_str()),
+            ))
+            .filter_map(move |(k, v)| k.strip_prefix(&start).map(|it| (it, v)))
     }
 }
 

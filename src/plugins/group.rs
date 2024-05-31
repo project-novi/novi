@@ -19,10 +19,11 @@ pub async fn init(novi: &Novi) -> Result<()> {
                 let children = session
                     .query(
                         None,
-                        Filter::Atom(
-                            "@parent".to_owned(),
-                            FilterKind::Equals(args.object.id.to_string(), true),
-                        ),
+                        Filter::Atom {
+                            tag: "@parent".to_owned(),
+                            kind: FilterKind::Equals(args.object.id.to_string(), true),
+                            prefix: false,
+                        },
                         QueryOptions::default(),
                     )
                     .await?;

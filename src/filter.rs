@@ -1,21 +1,21 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
-use tokio_postgres::types::Type;
 use std::{
-    collections::HashSet,
-    fmt::{self, Display, Formatter},
-    ops::AddAssign,
+    collections::BTreeSet,
+    fmt::{Display, Formatter, Write},
+    ops::{AddAssign, Bound},
     str::FromStr,
 };
+use tokio_postgres::types::Type;
 
 use crate::{
+    bail,
     identity::Identity,
-    misc::wrap_nom_from_str,
+    misc::{tag_bounds, wrap_nom_from_str},
     object::Object,
     proto::query_request::Order,
     query::{pg_pattern_escape, PgArguments, QueryBuilder},
-    tag::{self, TagValue},
-    Error, Result,
+    tag, Error, Result,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,21 +29,51 @@ pub enum FilterKind {
 }
 
 impl FilterKind {
-    pub fn satisfies(&self, val: Option<&TagValue>, deleted: bool, updated: DateTime<Utc>) -> bool {
-        let val = match val {
+    pub fn satisfies(
+        &self,
+        object: &Object,
+        tag: &str,
+        prefix: bool,
+        deleted_tags: &BTreeSet<String>,
+    ) -> bool {
+        let latest_updated = if prefix {
+            object.subtags(tag).map(|(_, v)| v.updated).max()
+        } else {
+            object.tags.get(tag).map(|it| it.updated)
+        };
+        let deleted = || {
+            if prefix {
+                let (start, end) = tag_bounds(tag);
+                deleted_tags
+                    .range::<str, _>((
+                        Bound::Included(start.as_str()),
+                        Bound::Excluded(end.as_str()),
+                    ))
+                    .next()
+                    .is_some()
+            } else {
+                deleted_tags.contains(tag)
+            }
+        };
+        match self {
+            FilterKind::Has => return latest_updated.is_some(),
+            FilterKind::Updated => return latest_updated == Some(object.updated),
+            FilterKind::Modified => return latest_updated == Some(object.updated) || deleted(),
+            FilterKind::Deleted => return deleted(),
+            _ => {}
+        }
+
+        assert!(!prefix);
+        let val = match object.tags.get(tag) {
             Some(val) => val,
             None => {
                 return match self {
                     FilterKind::Equals(_, false) | FilterKind::Contains(_, false) => true,
-                    FilterKind::Deleted | FilterKind::Modified => deleted,
                     _ => false,
                 }
             }
         };
-
         match self {
-            FilterKind::Has => true,
-            FilterKind::Updated | FilterKind::Modified => val.updated == updated,
             FilterKind::Equals(value, eq) => (val.value.as_ref() == Some(value)) == *eq,
             FilterKind::Contains(value, eq) => {
                 val.value.as_ref().map_or(false, |it| it.contains(value)) == *eq
@@ -55,7 +85,11 @@ impl FilterKind {
 
 #[derive(Clone, Debug)]
 pub enum Filter {
-    Atom(String, FilterKind),
+    Atom {
+        tag: String,
+        kind: FilterKind,
+        prefix: bool,
+    },
     Ands(Vec<Filter>),
     Ors(Vec<Filter>),
     Neg(Box<Filter>),
@@ -70,18 +104,24 @@ impl Default for Filter {
 impl Display for Filter {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Atom(tag, kind) => match kind {
-                FilterKind::Has => write!(f, "{tag}"),
-                FilterKind::Updated => write!(f, "+{tag}"),
-                FilterKind::Deleted => write!(f, "!{tag}"),
-                FilterKind::Modified => write!(f, "~{tag}"),
-                FilterKind::Equals(value, eq) => {
-                    write!(f, "{tag}{}={value:?}", if *eq { "" } else { "!" })
+            Self::Atom { tag, kind, prefix } => {
+                (match kind {
+                    FilterKind::Has => write!(f, "{tag}"),
+                    FilterKind::Updated => write!(f, "+{tag}"),
+                    FilterKind::Deleted => write!(f, "!{tag}"),
+                    FilterKind::Modified => write!(f, "~{tag}"),
+                    FilterKind::Equals(value, eq) => {
+                        write!(f, "{tag}{}={value:?}", if *eq { "" } else { "!" })
+                    }
+                    FilterKind::Contains(value, eq) => {
+                        write!(f, "{tag}{}%{value}", if *eq { "" } else { "!" })
+                    }
+                })?;
+                if *prefix {
+                    f.write_char('*')?;
                 }
-                FilterKind::Contains(value, eq) => {
-                    write!(f, "{tag}{}%{value}", if *eq { "" } else { "!" })
-                }
-            },
+                Ok(())
+            }
             Self::Ands(conds) => {
                 if conds.is_empty() {
                     write!(f, "*")
@@ -124,7 +164,7 @@ impl Filter {
 
     pub fn prefix_with(&mut self, prefix: &str) {
         match self {
-            Self::Atom(tag, _) => {
+            Self::Atom { tag, .. } => {
                 tag.insert_str(0, prefix);
             }
             Self::Ands(conds) | Self::Ors(conds) => {
@@ -136,13 +176,9 @@ impl Filter {
         }
     }
 
-    pub fn matches(&self, object: &Object, deleted_tags: &HashSet<String>) -> bool {
+    pub fn matches(&self, object: &Object, deleted_tags: &BTreeSet<String>) -> bool {
         match self {
-            Self::Atom(tag, kind) => kind.satisfies(
-                object.tags.get(tag),
-                deleted_tags.contains(tag),
-                object.updated,
-            ),
+            Self::Atom { tag, kind, prefix } => kind.satisfies(object, tag, *prefix, deleted_tags),
             Self::Ands(conds) => conds.iter().all(|it| it.matches(object, deleted_tags)),
             Self::Ors(conds) => conds.iter().any(|it| it.matches(object, deleted_tags)),
             Self::Neg(filter) => !filter.matches(object, deleted_tags),
@@ -151,9 +187,12 @@ impl Filter {
 
     pub fn validate(&self) -> Result<()> {
         match self {
-            Self::Atom(tag, kind) => {
+            Self::Atom { tag, kind, prefix } => {
                 tag::validate_tag_name(tag)?;
                 if let FilterKind::Equals(value, _) | FilterKind::Contains(value, _) = kind {
+                    if *prefix {
+                        bail!(@InvalidArgument "cannot use value query with tag prefix");
+                    }
                     tag::validate_tag_value(tag, Some(value))?;
                 }
             }
@@ -328,7 +367,11 @@ pub(crate) mod parse {
                 } else {
                     FilterKind::Equals(value, not.is_none())
                 };
-                Filter::Atom(tag.to_owned(), kind)
+                Filter::Atom {
+                    tag: tag.to_owned(),
+                    kind,
+                    prefix: false,
+                }
             },
         );
         let prefix = map(
@@ -338,18 +381,19 @@ pub(crate) mod parse {
                 filter
             },
         );
-        let has = map(tag_name, |tag| {
-            Filter::Atom(tag.to_owned(), FilterKind::Has)
-        });
-        let updated = map(preceded(char('+'), tag_name), |tag| {
-            Filter::Atom(tag.to_owned(), FilterKind::Updated)
-        });
-        let deleted = map(preceded(char('!'), tag_name), |tag| {
-            Filter::Atom(tag.to_owned(), FilterKind::Deleted)
-        });
-        let modified = map(preceded(char('~'), tag_name), |tag| {
-            Filter::Atom(tag.to_owned(), FilterKind::Modified)
-        });
+        let unary = map(
+            tuple((opt(one_of("+!~")), tag_name, opt(char('*')))),
+            |(op, tag, star)| Filter::Atom {
+                tag: tag.to_owned(),
+                kind: match op {
+                    Some('+') => FilterKind::Updated,
+                    Some('!') => FilterKind::Deleted,
+                    Some('~') => FilterKind::Modified,
+                    _ => FilterKind::Has,
+                },
+                prefix: star.is_some(),
+            },
+        );
         let neg = map(preceded(char('-'), atom), |f| Filter::Neg(Box::new(f)));
         let parens = delimited(
             preceded(char('('), multispace0),
@@ -357,10 +401,7 @@ pub(crate) mod parse {
             preceded(multispace0, char(')')),
         );
 
-        alt((
-            all, infix, prefix, has, updated, deleted, modified, neg, parens,
-        ))
-        .parse(i)
+        alt((all, infix, prefix, unary, neg, parens)).parse(i)
     }
 
     pub fn ors(i: &str) -> Result<Filter> {
@@ -412,7 +453,11 @@ impl Default for QueryOptions {
 }
 
 impl Filter {
-    pub fn query(&self, identity: &Identity, options: QueryOptions) -> (String, PgArguments, Vec<Type>) {
+    pub fn query(
+        &self,
+        identity: &Identity,
+        options: QueryOptions,
+    ) -> (String, PgArguments, Vec<Type>) {
         let mut q = QueryBuilder::new("object");
         self.build_sql(&mut q, identity, options.checkpoint);
 
@@ -447,22 +492,25 @@ impl Filter {
         q: &mut QueryBuilder,
         w: &mut String,
         ckpt: Option<&str>,
-    ) -> fmt::Result {
+    ) -> Result<()> {
         use std::fmt::Write;
         match self {
-            Self::Atom(tag, kind) => {
+            Self::Atom { tag, kind, prefix } => {
+                if *prefix {
+                    bail!(@InvalidArgument "cannot preform batched prefix query. it's intended to be used to filter events");
+                }
                 let tag = q.bind(tag.clone(), Type::TEXT);
                 match kind {
                     FilterKind::Has => {
-                        write!(w, "(tags ? {tag})")?;
+                        write!(w, "(tags ? {tag})").unwrap();
                     }
                     FilterKind::Updated | FilterKind::Modified => match ckpt {
                         Some(ckpt) => {
                             // TODO: is this appropriate?
-                            write!(w, "((tags->{tag}->>'u')::timestamptz > {ckpt})")?;
+                            write!(w, "((tags->{tag}->>'u')::timestamptz > {ckpt})").unwrap();
                         }
                         None => {
-                            write!(w, "((tags->{tag}->>'u')::timestamptz = updated)")?;
+                            write!(w, "((tags->{tag}->>'u')::timestamptz = updated)").unwrap();
                         }
                     },
                     FilterKind::Deleted => {
@@ -524,7 +572,7 @@ impl Filter {
         let checkpoint = checkpoint.map(|it| q.bind(it, Type::TIMESTAMPTZ));
         self.add_wheres_inner(q, &mut w, checkpoint.as_deref())
             .unwrap();
-        q.add_where_raw(w);
+        q.add_where(w);
 
         if !identity.is_admin() {
             use std::fmt::Write;
@@ -553,6 +601,7 @@ mod test {
             "@name=\"line1\\nline2\"",
             "@name % test",
             "@name != test",
+            "@[name tag]",
         ] {
             test.parse::<Filter>().unwrap();
         }

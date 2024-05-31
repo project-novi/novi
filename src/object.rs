@@ -1,13 +1,10 @@
 use chrono::{DateTime, Utc};
-use std::{
-    collections::{BTreeSet, HashSet},
-    ops::Bound,
-};
+use std::collections::{BTreeSet, HashSet};
 use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::{
-    misc::{now_utc, tag_bounds},
+    misc::now_utc,
     proto::{self, uuid_to_pb},
     tag::{is_scope, TagDict, TagValue, Tags},
     Result,
@@ -123,12 +120,10 @@ impl Object {
     }
 
     pub fn subtags<'a>(&'a self, scope: &'a str) -> impl Iterator<Item = (&str, &TagValue)> + 'a {
-        let (start, end) = tag_bounds(scope);
+        let start = format!("{scope}:");
+        let end = format!("{scope};");
         self.tags
-            .range::<str, _>((
-                Bound::Included(start.as_str()),
-                Bound::Excluded(end.as_str()),
-            ))
+            .range::<String, _>(&start..&end)
             .filter_map(move |(k, v)| k.strip_prefix(&start).map(|it| (it, v)))
     }
 }

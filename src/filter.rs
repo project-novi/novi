@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     collections::BTreeSet,
     fmt::{Display, Formatter, Write},
-    ops::{AddAssign, Bound},
+    ops::AddAssign,
     str::FromStr,
 };
 use tokio_postgres::types::Type;
@@ -11,7 +11,7 @@ use tokio_postgres::types::Type;
 use crate::{
     bail,
     identity::Identity,
-    misc::{tag_bounds, wrap_nom_from_str},
+    misc::wrap_nom_from_str,
     object::Object,
     proto::query_request::Order,
     query::{pg_pattern_escape, PgArguments, QueryBuilder},
@@ -36,30 +36,33 @@ impl FilterKind {
         prefix: bool,
         deleted_tags: &BTreeSet<String>,
     ) -> bool {
-        let latest_updated = if prefix {
-            object.subtags(tag).map(|(_, v)| v.updated).max()
+        let (latest_updated, deleted) = if prefix {
+            let (s1, e1) = (format!("{tag}:"), format!("{tag};"));
+            let (s2, e2) = (format!("{tag}."), format!("{tag}/"));
+            let updated = object
+                .tags
+                .range::<String, _>(&s1..&e1)
+                .chain(object.tags.range::<String, _>(&s2..&e2))
+                .map(|(_, v)| v.updated)
+                .max();
+            let deleted = deleted_tags
+                .range::<String, _>(&s1..&e1)
+                .chain(deleted_tags.range::<String, _>(&s2..&e2))
+                .next()
+                .is_some();
+
+            (updated, deleted)
         } else {
-            object.tags.get(tag).map(|it| it.updated)
-        };
-        let deleted = || {
-            if prefix {
-                let (start, end) = tag_bounds(tag);
-                deleted_tags
-                    .range::<str, _>((
-                        Bound::Included(start.as_str()),
-                        Bound::Excluded(end.as_str()),
-                    ))
-                    .next()
-                    .is_some()
-            } else {
-                deleted_tags.contains(tag)
-            }
+            (
+                object.tags.get(tag).map(|it| it.updated),
+                deleted_tags.contains(tag),
+            )
         };
         match self {
             FilterKind::Has => return latest_updated.is_some(),
             FilterKind::Updated => return latest_updated == Some(object.updated),
-            FilterKind::Modified => return latest_updated == Some(object.updated) || deleted(),
-            FilterKind::Deleted => return deleted(),
+            FilterKind::Modified => return latest_updated == Some(object.updated) || deleted,
+            FilterKind::Deleted => return deleted,
             _ => {}
         }
 

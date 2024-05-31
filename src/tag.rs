@@ -17,11 +17,12 @@ pub fn valid_tag_char(c: char) -> bool {
     valid_nonspace_tag_char(c) || c == ' '
 }
 
-pub fn scope_of(tag: &str) -> &str {
-    if tag.starts_with('@') {
-        tag.split_once('.').map_or(tag, |(pre, _)| pre)
+pub fn is_scope(tag: &str, scope: &str) -> bool {
+    if scope.is_empty() {
+        !tag.starts_with('@')
     } else {
-        ""
+        tag.strip_prefix(scope)
+            .map_or(false, |it| it.starts_with('.') || it.starts_with(':'))
     }
 }
 

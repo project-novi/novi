@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     misc::{now_utc, tag_bounds},
     proto::{self, uuid_to_pb},
-    tag::{scope_of, TagDict, TagValue, Tags},
+    tag::{is_scope, TagDict, TagValue, Tags},
     Result,
 };
 
@@ -85,7 +85,7 @@ impl Object {
 
         self.tags.retain(|tag, value| {
             if let Some(scopes) = &scopes {
-                if !scopes.contains(scope_of(tag)) {
+                if !scopes.iter().any(|scope| is_scope(tag, scope)) {
                     return true;
                 }
             }

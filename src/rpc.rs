@@ -17,7 +17,17 @@ use tonic::{Extensions, Request, Response, Status, Streaming};
 use tracing::{debug, info, warn};
 
 use crate::{
-    anyhow, bail, filter::{Filter, QueryOptions, TimeRange}, function::{parse_arguments, parse_json, Arguments}, hook::{HookArgs, ObjectEdits}, identity::{Identity, IDENTITIES}, misc::{utc_from_timestamp, BoxFuture}, proto::{self, query_request::Order, required, tags_from_pb, EventKind}, session::Session, subscribe::SubscribeOptions, token::{IdentityToken, SessionToken}, Error, Novi, Result
+    anyhow, bail,
+    filter::{Filter, QueryOptions, TimeRange},
+    function::{parse_arguments, parse_json, Arguments},
+    hook::{HookArgs, ObjectEdits},
+    identity::{Identity, IDENTITIES},
+    misc::{utc_from_timestamp, BoxFuture},
+    proto::{self, query_request::Order, required, tags_from_pb, EventKind},
+    session::Session,
+    subscribe::SubscribeOptions,
+    token::{IdentityToken, SessionToken},
+    Error, Novi, Result,
 };
 
 pub fn interceptor(mut req: Request<()>) -> Result<Request<()>, Status> {
@@ -93,7 +103,7 @@ impl SessionStore {
         let (token, handle) = match ext.remove::<SessionToken>() {
             Some(token) => (token, None),
             None => {
-                // Run in a temporary new session
+                // run in a temporary new session
                 // TODO: Is it possible that the this break the consistency?
                 let (token, handle) = self.new_session(None).await?;
                 (token, Some(handle))
@@ -113,6 +123,10 @@ impl SessionStore {
                 })
             })))
             .await;
+        if handle.is_some() {
+            // release temporary session
+            let _ = sender.send(Command::End { commit: false }).await;
+        }
         drop(sender);
 
         if result.is_err() {
@@ -619,8 +633,7 @@ impl proto::novi_server::Novi for RpcFacade {
             .register_function(
                 name,
                 Box::new(
-                    move |(session, store): (&mut Session, SessionStore),
-                          arguments: Arguments| {
+                    move |(session, store): (&mut Session, SessionStore), arguments: Arguments| {
                         let token = session.token().to_string();
                         let call_tx = call_tx.clone();
                         Box::pin(session.yield_self(store, async move {

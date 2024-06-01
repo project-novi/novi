@@ -36,12 +36,14 @@ impl Default for SubscribeOptions {
     }
 }
 
+pub(crate) struct Event {
+    pub kind: EventKind,
+    pub object: Object,
+    pub deleted_tags: BTreeSet<String>,
+}
+
 pub(crate) enum DispatchWorkerCommand {
-    Event {
-        kind: EventKind,
-        object: Object,
-        deleted_tags: BTreeSet<String>,
-    },
+    Event(Event),
     NewSub {
         alive: Arc<AtomicBool>,
         filter: Filter,
@@ -73,11 +75,11 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                     callback,
                 });
             }
-            DispatchWorkerCommand::Event {
+            DispatchWorkerCommand::Event(Event {
                 kind,
                 object,
                 deleted_tags,
-            } => {
+            }) => {
                 debug!(object = %object.id, ?kind, "dispatch event");
                 let mut i = 0;
                 while i < subscribers.len() {

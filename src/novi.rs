@@ -3,6 +3,7 @@ use chrono::Utc;
 use dashmap::DashMap;
 use deadpool::managed::Pool;
 use redis::AsyncCommands;
+use tracing::warn;
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
@@ -22,7 +23,7 @@ use crate::{
     plugins,
     proto::reg_hook_request::HookPoint,
     session::Session,
-    subscribe::DispatchWorkerCommand,
+    subscribe::{DispatchWorkerCommand, Event},
     token::IdentityToken,
     user::{User, UserRef, INTERNAL_USER},
     Config, Result,
@@ -196,6 +197,16 @@ impl Novi {
             self.guest_user.clone(),
             Some(Utc::now() + chrono::Duration::days(7)),
         ))
+    }
+
+    pub(crate) async fn dispatch_event(&self, event: Event) {
+        if let Err(err) = self
+            .dispatch_tx
+            .send(DispatchWorkerCommand::Event(event))
+            .await
+        {
+            warn!(?err, "dispatcher disconnected");
+        }
     }
 }
 

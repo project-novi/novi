@@ -21,7 +21,7 @@ use crate::{
     proto::{query_request::Order, reg_hook_request::HookPoint, EventKind},
     query::args_to_ref,
     rpc::{Command, SessionStore},
-    subscribe::{DispatchWorkerCommand, SubscribeCallback, SubscribeOptions},
+    subscribe::{DispatchWorkerCommand, Event, SubscribeCallback, SubscribeOptions},
     tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags},
     token::SessionToken,
     Result,
@@ -45,8 +45,12 @@ pub struct Session {
     pub(crate) connection: Box<PgConnection>,
     lock: Option<bool>,
 
-    // Keep track of currently running hooks to avoid reentrancy.
+    // Keep track of currently running hooks to avoid reentrancy
     running_hooks: [bool; HOOK_POINT_COUNT],
+
+    // For transactions, events should be dispatched only after the transaction
+    // is committed
+    pending_events: Vec<Event>,
 }
 impl Session {
     pub(crate) async fn transaction(
@@ -74,6 +78,8 @@ impl Session {
             lock,
 
             running_hooks: Default::default(),
+
+            pending_events: Vec::new(),
         })
     }
 
@@ -83,11 +89,18 @@ impl Session {
 
     pub async fn end(self, commit: bool) -> Result<(), tokio_postgres::Error> {
         if let Some(txn) = self.txn {
-            if commit {
+            let result = if commit {
                 txn.commit().await
             } else {
                 txn.rollback().await
-            }
+            };
+            let novi = self.novi.clone();
+            tokio::spawn(async move {
+                for event in self.pending_events {
+                    novi.dispatch_event(event).await;
+                }
+            });
+            result
         } else {
             Ok(())
         }
@@ -229,18 +242,21 @@ impl Session {
         Ok(object)
     }
 
-    async fn object_event(&self, kind: EventKind, object: Object, deleted_tags: BTreeSet<String>) {
-        if let Err(err) = self
-            .novi
-            .dispatch_tx
-            .send(DispatchWorkerCommand::Event {
-                kind,
-                object,
-                deleted_tags,
-            })
-            .await
-        {
-            warn!(?err, "dispatcher disconnected");
+    async fn emit_event(
+        &mut self,
+        kind: EventKind,
+        object: Object,
+        deleted_tags: BTreeSet<String>,
+    ) {
+        let event = Event {
+            kind,
+            object,
+            deleted_tags,
+        };
+        if self.txn.is_some() {
+            self.pending_events.push(event);
+        } else {
+            self.novi.dispatch_event(event).await;
         }
     }
 
@@ -287,7 +303,7 @@ impl Session {
             &deleted_tags,
         )
         .await?;
-        self.object_event(EventKind::Update, object.clone(), deleted_tags)
+        self.emit_event(EventKind::Update, object.clone(), deleted_tags)
             .await;
 
         Ok(())
@@ -409,7 +425,7 @@ impl Session {
             &Default::default(),
         )
         .await?;
-        self.object_event(EventKind::Create, object.clone(), Default::default())
+        self.emit_event(EventKind::Create, object.clone(), Default::default())
             .await;
 
         self.return_object(store, object).await
@@ -548,7 +564,7 @@ impl Session {
             &Default::default(),
         )
         .await?;
-        self.object_event(EventKind::Delete, object, Default::default())
+        self.emit_event(EventKind::Delete, object, Default::default())
             .await;
 
         Ok(())

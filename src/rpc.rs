@@ -208,15 +208,36 @@ impl proto::novi_server::Novi for RpcFacade {
         }))
     }
 
+    type NewSessionStream = ReceiverStream<Result<proto::NewSessionReply, Status>>;
+
     async fn new_session(
         &self,
         req: Request<proto::NewSessionRequest>,
-    ) -> RpcResult<proto::NewSessionReply> {
+    ) -> RpcResult<Self::NewSessionStream> {
         let req = req.into_inner();
+        info!("new session");
+
         let (token, _) = self.0.new_session(req.lock).await?;
-        Ok(Response::new(proto::NewSessionReply {
+
+        let (tx, rx) = mpsc::channel::<Result<proto::NewSessionReply, Status>>(1);
+        tx.send(Ok(proto::NewSessionReply {
             token: token.to_string(),
         }))
+        .await
+        .unwrap();
+
+        // spawns a task to end the session if the client disconnects
+        tokio::spawn({
+            let store = self.0.clone();
+            let token = token.clone();
+            async move {
+                tx.closed().await;
+                warn!("client disconnected, ending session");
+                store.senders.remove(&token);
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 
     async fn end_session(

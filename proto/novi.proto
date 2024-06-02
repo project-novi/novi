@@ -40,7 +40,7 @@ service Novi {
   rpc LoginAs(LoginAsRequest) returns (LoginAsReply);
   rpc UseMasterKey(UseMasterKeyRequest) returns (UseMasterKeyReply);
 
-  rpc NewSession(NewSessionRequest) returns (NewSessionReply);
+  rpc NewSession(NewSessionRequest) returns (stream NewSessionReply);
   rpc EndSession(EndSessionRequest) returns (EndSessionReply);
 
   rpc CreateObject(CreateObjectRequest) returns (CreateObjectReply);

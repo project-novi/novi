@@ -22,7 +22,6 @@ pub use error::*;
 
 use tokio::net::UnixListener;
 use tonic::transport::Server;
-use tracing::warn;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{config::Config, novi::Novi};
@@ -37,7 +36,6 @@ fn init_log() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_log();
-    warn!("use delete hook to implement file deletion, @group and @event(?)");
     let config: Config = serde_yaml::from_reader(std::fs::File::open("server.yaml")?)?;
     let server = Novi::new(config).await?;
 

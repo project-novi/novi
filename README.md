@@ -17,6 +17,8 @@ The goals of Novi are:
 - **Performant**: Powered by Rust and backed by PostgreSQL, Novi is fast and reliable.
 - **Safe**: A fine-grained permission system controls who can do what, down to the per-object level.
 
+[Demo page](https://novi.mivik.moe) (nah it's just a bunch of anime girls)
+
 ## Documentation
 
 See <https://novi-docs.mivik.moe>.

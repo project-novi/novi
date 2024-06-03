@@ -16,7 +16,7 @@ The goals of Novi are:
 
 ## Documentation
 
-TBD
+See <https://novi-docs.mivik.moe>.
 
 ## Dependencies
 

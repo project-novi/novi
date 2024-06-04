@@ -13,11 +13,11 @@ use crate::{
 
 pub const HOOK_POINT_COUNT: usize = 7;
 
-pub type HookCallback =
-    Box<dyn for<'a> Fn(HookArgs<'a>) -> BoxFuture<'a, Result<ObjectEdits>> + Send + Sync>;
+pub type CoreHookCallback =
+    Box<dyn for<'a> Fn(CoreHookArgs<'a>) -> BoxFuture<'a, Result<ObjectEdits>> + Send + Sync>;
 
 #[non_exhaustive]
-pub struct HookArgs<'a> {
+pub struct CoreHookArgs<'a> {
     pub object: &'a Object,
     pub old_object: Option<&'a Object>,
 
@@ -26,11 +26,11 @@ pub struct HookArgs<'a> {
     // so it's safe to assume the presence of session for non-BeforeView hooks.
     pub session: Option<(&'a mut Session, &'a SessionStore)>,
 }
-impl<'a> HookArgs<'a> {
-    pub fn to_pb(&self) -> proto::RegHookReply {
+impl<'a> CoreHookArgs<'a> {
+    pub fn to_pb(&self) -> proto::RegCoreHookReply {
         // TODO: Transmiting session should be optional in order to save
         // bandwidth
-        proto::RegHookReply {
+        proto::RegCoreHookReply {
             call_id: 0,
             object: Some(self.object.clone().into()),
             old_object: self.old_object.cloned().map(Into::into),

@@ -2,17 +2,17 @@ use tracing::debug;
 
 use crate::{
     filter::{Filter, FilterKind, QueryOptions},
-    hook::{HookArgs, ObjectEdits},
+    hook::{CoreHookArgs, ObjectEdits},
     novi::Novi,
-    proto::reg_hook_request::HookPoint,
+    proto::reg_core_hook_request::HookPoint,
     Result,
 };
 
 pub async fn init(novi: &Novi) -> Result<()> {
-    novi.register_hook(
+    novi.register_core_hook(
         HookPoint::AfterDelete,
         "@group".parse()?,
-        Box::new(move |args: HookArgs| {
+        Box::new(move |args: CoreHookArgs| {
             let (session, _) = args.session.unwrap();
             Box::pin(async move {
                 debug!(id = %args.object.id, "cascade delete objects");

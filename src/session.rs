@@ -14,11 +14,11 @@ use crate::{
     anyhow, bail,
     filter::{Filter, QueryOptions},
     function::Arguments,
-    hook::{HookArgs, HOOK_POINT_COUNT},
+    hook::{CoreHookArgs, HOOK_POINT_COUNT},
     identity::Identity,
     novi::Novi,
     object::Object,
-    proto::{query_request::Order, reg_hook_request::HookPoint, EventKind},
+    proto::{query_request::Order, reg_core_hook_request::HookPoint, EventKind},
     query::args_to_ref,
     rpc::{Command, SessionStore},
     subscribe::{DispatchWorkerCommand, Event, SubscribeCallback, SubscribeOptions},
@@ -176,12 +176,12 @@ impl Session {
     ) -> Result<()> {
         // On editing this, also edit subscribe::dispatch_worker
         let shared = self.novi.clone();
-        let hooks = shared.hooks.read().await;
+        let hooks = shared.core_hooks.read().await;
         for (filter, f) in hooks[point as usize].iter().rev() {
             if !filter.matches(object, deleted_tags) {
                 continue;
             }
-            let edits = f(HookArgs {
+            let edits = f(CoreHookArgs {
                 object,
                 old_object,
                 session: Some((self, &store)),

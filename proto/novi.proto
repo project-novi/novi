@@ -52,7 +52,7 @@ service Novi {
 
   rpc Query(QueryRequest) returns (QueryReply);
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeReply);
-  rpc RegisterHook(stream RegHookRequest) returns (stream RegHookReply);
+  rpc RegisterCoreHook(stream RegCoreHookRequest) returns (stream RegCoreHookReply);
   rpc RegisterFunction(stream RegFunctionRequest)
       returns (stream RegFunctionReply);
   rpc CallFunction(CallFunctionRequest) returns (CallFunctionReply);
@@ -149,7 +149,7 @@ message ObjectEdits {
   Tags update = 2;
   bool clear = 3;
 }
-message RegHookRequest {
+message RegCoreHookRequest {
   // On editing this, make sure to update HOOK_POINT_COUNT in hook.rs
   enum HookPoint {
     BEFORE_CREATE = 0;
@@ -177,7 +177,7 @@ message RegHookRequest {
     CallResult result = 2;
   }
 }
-message RegHookReply {
+message RegCoreHookReply {
   uint64 call_id = 1;
   Object object = 2;
   optional Object old_object = 3;

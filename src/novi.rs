@@ -18,10 +18,10 @@ use crate::{
     bail,
     filter::Filter,
     function::Function,
-    hook::{HookCallback, HOOK_POINT_COUNT},
+    hook::{CoreHookCallback, HOOK_POINT_COUNT},
     identity::Identity,
     plugins,
-    proto::reg_hook_request::HookPoint,
+    proto::reg_core_hook_request::HookPoint,
     session::Session,
     subscribe::{DispatchWorkerCommand, Event},
     token::IdentityToken,
@@ -31,7 +31,7 @@ use crate::{
 
 pub struct Inner {
     pub config: Config,
-    pub hooks: RwLock<[Vec<(Filter, HookCallback)>; HOOK_POINT_COUNT]>,
+    pub core_hooks: RwLock<[Vec<(Filter, CoreHookCallback)>; HOOK_POINT_COUNT]>,
     pub functions: DashMap<String, Function>,
     pub dispatch_tx: mpsc::Sender<DispatchWorkerCommand>,
     pub guest_user: Arc<User>,
@@ -42,8 +42,8 @@ pub struct Inner {
     pub redis_pool: Pool<deadpool_redis::Manager, deadpool_redis::Connection>,
 }
 impl Inner {
-    pub async fn register_hook(&self, point: HookPoint, filter: Filter, f: HookCallback) {
-        self.hooks.write().await[point as usize].push((filter, f));
+    pub async fn register_core_hook(&self, point: HookPoint, filter: Filter, f: CoreHookCallback) {
+        self.core_hooks.write().await[point as usize].push((filter, f));
     }
 
     pub async fn register_function(&self, name: String, f: Function) -> Result<()> {
@@ -95,7 +95,7 @@ impl Novi {
         let (dispatch_tx, dispatch_rx) = mpsc::channel(1024);
         let inner = Arc::new(Inner {
             config,
-            hooks: Default::default(),
+            core_hooks: Default::default(),
             functions: DashMap::new(),
             dispatch_tx,
             guest_user,

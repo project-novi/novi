@@ -6,9 +6,9 @@ use uuid::Uuid;
 
 use crate::{
     bail,
-    hook::{HookArgs, ObjectEdits},
+    hook::{CoreHookArgs, ObjectEdits},
     novi::Novi,
-    proto::reg_hook_request::HookPoint,
+    proto::reg_core_hook_request::HookPoint,
     user::{User, UserRef},
     Result,
 };
@@ -16,10 +16,10 @@ use crate::{
 pub(crate) static USERS: Lazy<RwLock<HashMap<Uuid, UserRef>>> = Lazy::new(Default::default);
 
 async fn add_hook(novi: &Novi, point: HookPoint) -> Result<()> {
-    novi.register_hook(
+    novi.register_core_hook(
         point,
         "~@user*".parse()?,
-        Box::new(|args: HookArgs| {
+        Box::new(|args: CoreHookArgs| {
             Box::pin(async move {
                 println!("{} user updating", args.object.id);
                 let new_user = User::try_from(args.object.clone())?;
@@ -52,10 +52,10 @@ pub async fn init(novi: &Novi) -> Result<()> {
     add_hook(novi, HookPoint::BeforeCreate).await?;
     add_hook(novi, HookPoint::BeforeUpdate).await?;
 
-    novi.register_hook(
+    novi.register_core_hook(
         HookPoint::BeforeView,
         "@user".parse()?,
-        Box::new(|args: HookArgs| {
+        Box::new(|args: CoreHookArgs| {
             Box::pin(async move {
                 let mut edits = ObjectEdits::default();
                 if args.object.tags.contains_key("@user.password") {

@@ -20,7 +20,7 @@ use crate::{
     anyhow, bail,
     filter::{Filter, QueryOptions, TimeRange},
     function::{parse_arguments, parse_json, Arguments},
-    hook::{HookArgs, ObjectEdits},
+    hook::{CoreHookArgs, ObjectEdits},
     identity::{Identity, IDENTITIES},
     misc::{utc_from_timestamp, BoxFuture},
     proto::{self, query_request::Order, required, tags_from_pb, EventKind},
@@ -470,19 +470,19 @@ impl proto::novi_server::Novi for RpcFacade {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
-    type RegisterHookStream = ReceiverStream<Result<proto::RegHookReply, Status>>;
+    type RegisterCoreHookStream = ReceiverStream<Result<proto::RegCoreHookReply, Status>>;
 
-    async fn register_hook(
+    async fn register_core_hook(
         &self,
-        req: Request<Streaming<proto::RegHookRequest>>,
-    ) -> RpcResult<Self::RegisterHookStream> {
-        use proto::{reg_hook_request::*, RegHookRequest as Req};
+        req: Request<Streaming<proto::RegCoreHookRequest>>,
+    ) -> RpcResult<Self::RegisterCoreHookStream> {
+        use proto::{reg_core_hook_request::*, RegCoreHookRequest as Req};
 
         let (_, ext, mut req) = req.into_parts();
         self.0
             .extract_identity(&ext)
             .await?
-            .check_perm("hook.register")?;
+            .check_perm("core_hook.register")?;
 
         let Some(Ok(Req {
             message: Some(Message::Initiate(init)),
@@ -495,11 +495,11 @@ impl proto::novi_server::Novi for RpcFacade {
         };
         let filter: Filter = init.filter.parse()?;
 
-        info!(?point, "register hook");
+        info!(?point, "register core hook");
 
-        let (stream_tx, stream_rx) = mpsc::channel::<Result<proto::RegHookReply, Status>>(8);
+        let (stream_tx, stream_rx) = mpsc::channel::<Result<proto::RegCoreHookReply, Status>>(8);
         let (call_tx, mut call_rx) =
-            mpsc::channel::<(proto::RegHookReply, oneshot::Sender<Result<ObjectEdits>>)>(32);
+            mpsc::channel::<(proto::RegCoreHookReply, oneshot::Sender<Result<ObjectEdits>>)>(32);
         let removed = Arc::new(AtomicBool::default());
         tokio::spawn({
             let removed = removed.clone();
@@ -538,17 +538,17 @@ impl proto::novi_server::Novi for RpcFacade {
                         else => break,
                     }
                 }
-                warn!("hook client disconnected");
+                warn!("core hook client disconnected");
                 removed.store(true, Ordering::Relaxed);
             }
         });
 
         self.0
             .novi
-            .register_hook(
+            .register_core_hook(
                 point,
                 filter,
-                Box::new(move |args: HookArgs| {
+                Box::new(move |args: CoreHookArgs| {
                     if removed.load(Ordering::Relaxed) {
                         return Box::pin(async move { Ok(ObjectEdits::default()) });
                     }
@@ -558,13 +558,13 @@ impl proto::novi_server::Novi for RpcFacade {
                     let fut = async move {
                         let (result_tx, result_rx) = oneshot::channel::<Result<ObjectEdits>>();
                         if call_tx.send((pb, result_tx)).await.is_err() {
-                            warn!("hook client disconnected, removing hook");
+                            warn!("core hook client disconnected, removing hook");
                             removed.store(true, Ordering::Relaxed);
                             return Ok(ObjectEdits::default());
                         }
                         result_rx
                             .await
-                            .map_err(|_| anyhow!(@IOError "hook client disconnected"))?
+                            .map_err(|_| anyhow!(@IOError "core hook client disconnected"))?
                     };
                     if let Some((session, store)) = args.session {
                         Box::pin(session.yield_self(store.clone(), fut))

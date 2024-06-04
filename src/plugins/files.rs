@@ -7,9 +7,9 @@ use uuid::Uuid;
 
 use crate::{
     filter::Filter,
-    hook::{HookArgs, ObjectEdits},
+    hook::{CoreHookArgs, ObjectEdits},
     novi::Novi,
-    proto::reg_hook_request::HookPoint,
+    proto::reg_core_hook_request::HookPoint,
 };
 
 fn file_path(storage_path: &Path, id: Uuid, variant: &str) -> PathBuf {
@@ -22,10 +22,10 @@ fn file_path(storage_path: &Path, id: Uuid, variant: &str) -> PathBuf {
 
 pub async fn init(novi: &Novi) {
     let storage_path = Arc::new(novi.config.storage_path.clone());
-    novi.register_hook(
+    novi.register_core_hook(
         HookPoint::AfterDelete,
         Filter::all(),
-        Box::new(move |args: HookArgs| {
+        Box::new(move |args: CoreHookArgs| {
             let storage_path = storage_path.clone();
             Box::pin(async move {
                 for (variant, _) in args.object.subtags("@file") {

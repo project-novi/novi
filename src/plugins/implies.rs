@@ -8,11 +8,11 @@ use uuid::Uuid;
 use crate::{
     anyhow, bail,
     filter::{Filter, QueryOptions},
-    hook::{HookArgs, ObjectEdits},
+    hook::{CoreHookArgs, ObjectEdits},
     misc::{now_utc, wrap_nom_from_str},
     novi::Novi,
     object::Object,
-    proto::reg_hook_request::HookPoint,
+    proto::reg_core_hook_request::HookPoint,
     query::{args_to_ref, QueryBuilder},
     session::Session,
     tag::{TagDict, TagValue},
@@ -253,9 +253,9 @@ impl Implies {
 }
 
 async fn add_imply_hook(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()> {
-    novi.register_hook(HookPoint::BeforeCreate, "~@imply".parse()?, {
+    novi.register_core_hook(HookPoint::BeforeCreate, "~@imply".parse()?, {
         let implies = implies.clone();
-        Box::new(move |args: HookArgs| {
+        Box::new(move |args: CoreHookArgs| {
             let implies = implies.clone();
             let (session, _) = args.session.unwrap();
             Box::pin(async move {
@@ -271,10 +271,10 @@ async fn add_imply_hook(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()
         })
     })
     .await;
-    novi.register_hook(
+    novi.register_core_hook(
         HookPoint::BeforeUpdate,
         "~@imply".parse()?,
-        Box::new(move |args: HookArgs| {
+        Box::new(move |args: CoreHookArgs| {
             let implies = implies.clone();
             let (session, _) = args.session.unwrap();
             Box::pin(async move {
@@ -295,10 +295,10 @@ async fn add_imply_hook(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()
 }
 
 async fn add_any_hook(novi: &Novi, point: HookPoint, implies: Arc<RwLock<Implies>>) {
-    novi.register_hook(
+    novi.register_core_hook(
         point,
         Filter::all(),
-        Box::new(move |args: HookArgs| {
+        Box::new(move |args: CoreHookArgs| {
             let implies = implies.clone();
             Box::pin(async move {
                 let mut edits = ObjectEdits::new();

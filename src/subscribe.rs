@@ -12,11 +12,11 @@ use tracing::{debug, error};
 use crate::{
     bail,
     filter::Filter,
-    hook::HookArgs,
+    hook::CoreHookArgs,
     misc::BoxFuture,
     novi::Novi,
     object::Object,
-    proto::{reg_hook_request::HookPoint, EventKind},
+    proto::{reg_core_hook_request::HookPoint, EventKind},
     Result,
 };
 
@@ -93,14 +93,14 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                         && sub.filter.matches(&object, &deleted_tags)
                     {
                         // Run the BeforeView hooks manually since we're not in a session
-                        let hooks = novi.hooks.read().await;
+                        let hooks = novi.core_hooks.read().await;
                         for (filter, f) in &hooks[HookPoint::BeforeView as usize] {
                             if !filter.matches(&object, &Default::default()) {
                                 continue;
                             }
 
                             let result: Result<()> = async {
-                                let edits = f(HookArgs {
+                                let edits = f(CoreHookArgs {
                                     object: &object,
                                     old_object: None,
                                     session: None,

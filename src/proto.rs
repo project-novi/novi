@@ -8,28 +8,6 @@ impl From<Uuid> for uuid::Uuid {
     }
 }
 
-pub fn uuid_to_pb(uuid: uuid::Uuid) -> Uuid {
-    let (hi, lo) = uuid.as_u64_pair();
-    Uuid { hi, lo }
-}
-
-pub fn tags_into_pb(ts: tag::Tags) -> Tags {
-    let mut tags = Vec::new();
-    let properties = ts
-        .into_iter()
-        .filter_map(|(k, v)| {
-            if let Some(v) = v {
-                Some((k, v))
-            } else {
-                tags.push(k);
-                None
-            }
-        })
-        .collect();
-
-    Tags { tags, properties }
-}
-
 pub fn tags_from_pb(pb: Tags) -> tag::Tags {
     let mut tags = tag::Tags::new();
     for tag in pb.tags {
@@ -39,6 +17,11 @@ pub fn tags_from_pb(pb: Tags) -> tag::Tags {
         tags.insert(k, Some(v));
     }
     tags
+}
+
+pub fn uuid_to_pb(uuid: uuid::Uuid) -> Uuid {
+    let (hi, lo) = uuid.as_u64_pair();
+    Uuid { hi, lo }
 }
 
 pub fn required<T>(what: Option<T>) -> Result<T> {

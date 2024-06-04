@@ -20,7 +20,7 @@ use crate::{
     anyhow, bail,
     filter::{Filter, QueryOptions, TimeRange},
     function::{parse_arguments, parse_json, Arguments},
-    hook::{CoreHookArgs, ObjectEdits},
+    hook::{CoreHookArgs, HookAction, HookArgs, ObjectEdits},
     identity::{Identity, IDENTITIES},
     misc::{utc_from_timestamp, BoxFuture},
     proto::{self, query_request::Order, required, tags_from_pb, EventKind},
@@ -470,6 +470,8 @@ impl proto::novi_server::Novi for RpcFacade {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
+    // TODO: reduce duplication (register_core_hook and register_hook)
+
     type RegisterCoreHookStream = ReceiverStream<Result<proto::RegCoreHookReply, Status>>;
 
     async fn register_core_hook(
@@ -498,8 +500,10 @@ impl proto::novi_server::Novi for RpcFacade {
         info!(?point, "register core hook");
 
         let (stream_tx, stream_rx) = mpsc::channel::<Result<proto::RegCoreHookReply, Status>>(8);
-        let (call_tx, mut call_rx) =
-            mpsc::channel::<(proto::RegCoreHookReply, oneshot::Sender<Result<ObjectEdits>>)>(32);
+        let (call_tx, mut call_rx) = mpsc::channel::<(
+            proto::RegCoreHookReply,
+            oneshot::Sender<Result<ObjectEdits>>,
+        )>(32);
         let removed = Arc::new(AtomicBool::default());
         tokio::spawn({
             let removed = removed.clone();
@@ -532,7 +536,7 @@ impl proto::novi_server::Novi for RpcFacade {
                                 };
                                 let _ = tx.send(result);
                             } else {
-                                warn!(call_id = result.call_id, "invalid call id from hook client");
+                                warn!(call_id = result.call_id, "invalid call id from core hook client");
                             }
                         }
                         else => break,
@@ -571,6 +575,110 @@ impl proto::novi_server::Novi for RpcFacade {
                     } else {
                         Box::pin(fut)
                     }
+                }),
+            )
+            .await;
+
+        Ok(Response::new(ReceiverStream::new(stream_rx)))
+    }
+
+    type RegisterHookStream = ReceiverStream<Result<proto::RegHookReply, Status>>;
+
+    async fn register_hook(
+        &self,
+        req: Request<Streaming<proto::RegHookRequest>>,
+    ) -> RpcResult<Self::RegisterHookStream> {
+        use proto::{reg_hook_request::*, RegHookRequest as Req};
+
+        let (_, ext, mut req) = req.into_parts();
+
+        let Some(Ok(Req {
+            message: Some(Message::Initiate(init)),
+        })) = req.next().await
+        else {
+            bail!(@InvalidArgument "expected initiate");
+        };
+        let function = init.function;
+        let before = init.before;
+
+        self.0
+            .extract_identity(&ext)
+            .await?
+            .check_perm(&format!("hook.register:{function}"))?;
+
+        info!(function, before, "register hook");
+
+        let (stream_tx, stream_rx) = mpsc::channel::<Result<proto::RegHookReply, Status>>(8);
+        let (call_tx, mut call_rx) =
+            mpsc::channel::<(proto::RegHookReply, oneshot::Sender<Result<HookAction>>)>(32);
+        let removed = Arc::new(AtomicBool::default());
+        tokio::spawn({
+            let removed = removed.clone();
+            async move {
+                let mut result_txs = Slab::new();
+                loop {
+                    tokio::select! {
+                        call = call_rx.recv() => {
+                            let Some((mut resp, tx)) = call else {
+                                break;
+                            };
+                            resp.call_id = result_txs.insert(tx) as u64;
+                            if stream_tx.send(Ok(resp)).await.is_err() {
+                                break;
+                            }
+                        }
+                        reply = req.next() => {
+                            let Some(Ok(reply)) = reply else {
+                                break;
+                            };
+                            let Req { message: Some(Message::Result(result)) } = reply else {
+                                warn!("invalid reply from client");
+                                continue;
+                            };
+                            if let Some(tx) = result_txs.try_remove(result.call_id as usize) {
+                                let result = match result.result {
+                                    Some(call_result::Result::Response(resp)) => HookAction::from_pb(resp),
+                                    Some(call_result::Result::Error(err)) => Err(Error::from_pb(err)),
+                                    _ => Err(anyhow!(@InvalidArgument "invalid response from client")),
+                                };
+                                let _ = tx.send(result);
+                            } else {
+                                warn!(call_id = result.call_id, "invalid call id from hook client");
+                            }
+                        }
+                        else => break,
+                    }
+                }
+                warn!("core hook client disconnected");
+                removed.store(true, Ordering::Relaxed);
+            }
+        });
+
+        self.0
+            .novi
+            .register_hook(
+                &function,
+                before,
+                Arc::new(move |args: HookArgs| {
+                    if removed.load(Ordering::Relaxed) {
+                        return Box::pin(async move { Ok(HookAction::default()) });
+                    }
+                    let removed = removed.clone();
+                    let call_tx = call_tx.clone();
+                    let pb = args.to_pb();
+                    let fut = async move {
+                        let (result_tx, result_rx) = oneshot::channel::<Result<HookAction>>();
+                        if call_tx.send((pb, result_tx)).await.is_err() {
+                            warn!("hook client disconnected, removing hook");
+                            removed.store(true, Ordering::Relaxed);
+                            return Ok(HookAction::default());
+                        }
+                        result_rx
+                            .await
+                            .map_err(|_| anyhow!(@IOError "hook client disconnected"))?
+                    };
+                    let (session, store) = args.session;
+                    Box::pin(session.yield_self(store.clone(), fut))
                 }),
             )
             .await;
@@ -653,16 +761,17 @@ impl proto::novi_server::Novi for RpcFacade {
             .novi
             .register_function(
                 name,
-                Box::new(
-                    move |(session, store): (&mut Session, SessionStore), arguments: Arguments| {
+                Arc::new(
+                    move |(session, store): (&mut Session, &SessionStore),
+                          arguments: &Arguments| {
                         let token = session.token().to_string();
                         let call_tx = call_tx.clone();
-                        Box::pin(session.yield_self(store, async move {
+                        Box::pin(session.yield_self(store.clone(), async move {
                             let (result_tx, result_rx) =
                                 oneshot::channel::<Result<serde_json::Value>>();
                             let reply = proto::RegFunctionReply {
                                 call_id: 0,
-                                arguments: serde_json::Value::Object(arguments).to_string(),
+                                arguments: serde_json::to_string(arguments).unwrap(),
                                 session: token,
                             };
                             if call_tx.send((reply, result_tx)).await.is_err() {
@@ -689,7 +798,7 @@ impl proto::novi_server::Novi for RpcFacade {
             .submit(ext, move |session, store| {
                 Box::pin(async move {
                     let result = session
-                        .call_function(store, &req.name, parse_arguments(req.arguments)?)
+                        .call_function(store, &req.name, &parse_arguments(req.arguments)?)
                         .await?;
                     Ok(proto::CallFunctionReply {
                         result: result.to_string(),

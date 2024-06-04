@@ -651,13 +651,13 @@ impl Session {
         &mut self,
         store: SessionStore,
         name: &str,
-        arguments: Arguments,
+        arguments: &Arguments,
     ) -> Result<serde_json::Value> {
         let novi = self.novi.clone();
         let Some(function) = novi.functions.get(name) else {
             bail!(@FunctionNotFound "function not found")
         };
 
-        function((self, store), arguments).await
+        function((self, &store), arguments).await
     }
 }

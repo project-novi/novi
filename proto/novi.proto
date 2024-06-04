@@ -52,7 +52,9 @@ service Novi {
 
   rpc Query(QueryRequest) returns (QueryReply);
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeReply);
-  rpc RegisterCoreHook(stream RegCoreHookRequest) returns (stream RegCoreHookReply);
+  rpc RegisterCoreHook(stream RegCoreHookRequest)
+      returns (stream RegCoreHookReply);
+  rpc RegisterHook(stream RegHookRequest) returns (stream RegHookReply);
   rpc RegisterFunction(stream RegFunctionRequest)
       returns (stream RegFunctionReply);
   rpc CallFunction(CallFunctionRequest) returns (CallFunctionReply);
@@ -182,6 +184,34 @@ message RegCoreHookReply {
   Object object = 2;
   optional Object old_object = 3;
   optional string session = 4;
+}
+
+message HookAction {
+  bool update_args = 1;
+  optional string result_or_args = 2;
+}
+message RegHookRequest {
+  message Initiate {
+    string function = 1;
+    bool before = 2;
+  }
+  message CallResult {
+    uint64 call_id = 1;
+    oneof result {
+      HookAction response = 2;
+      Error error = 3;
+    }
+  }
+  oneof message {
+    Initiate initiate = 1;
+    CallResult result = 2;
+  }
+}
+message RegHookReply {
+  uint64 call_id = 1;
+  string arguments = 2;
+  optional string original_result = 3;
+  string session = 4;
 }
 
 message RegFunctionRequest {

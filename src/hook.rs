@@ -1,7 +1,12 @@
 use chrono::{DateTime, Utc};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use crate::{
+    bail,
+    function::{parse_json, Arguments},
     misc::BoxFuture,
     object::Object,
     proto::{self, required, tags_from_pb},
@@ -15,6 +20,34 @@ pub const HOOK_POINT_COUNT: usize = 7;
 
 pub type CoreHookCallback =
     Box<dyn for<'a> Fn(CoreHookArgs<'a>) -> BoxFuture<'a, Result<ObjectEdits>> + Send + Sync>;
+
+pub type HookCallback =
+    Arc<dyn for<'a> Fn(HookArgs<'a>) -> BoxFuture<'a, Result<HookAction>> + Send + Sync>;
+
+#[derive(Default)]
+pub enum HookAction {
+    #[default]
+    None,
+    UpdateResult(serde_json::Value),
+    UpdateArgs(Arguments),
+}
+impl HookAction {
+    pub fn from_pb(pb: proto::HookAction) -> Result<Self> {
+        if let Some(result_or_args) = pb.result_or_args {
+            let result_or_args = parse_json(result_or_args)?;
+            if pb.update_args {
+                match result_or_args {
+                    serde_json::Value::Object(args) => Ok(Self::UpdateArgs(args)),
+                    _ => bail!(@InvalidArgument "invalid update_args value"),
+                }
+            } else {
+                Ok(Self::UpdateResult(result_or_args))
+            }
+        } else {
+            Ok(Self::None)
+        }
+    }
+}
 
 #[non_exhaustive]
 pub struct CoreHookArgs<'a> {
@@ -34,8 +67,24 @@ impl<'a> CoreHookArgs<'a> {
             call_id: 0,
             object: Some(self.object.clone().into()),
             old_object: self.old_object.cloned().map(Into::into),
-            // session: args.session.map(|it| it.to_string()),
             session: self.session.as_ref().map(|it| it.0.token().to_string()),
+        }
+    }
+}
+
+pub struct HookArgs<'a> {
+    pub arguments: &'a Arguments,
+    // None if the hook is a before-hook
+    pub original_result: Option<&'a serde_json::Value>,
+    pub session: (&'a mut Session, &'a SessionStore),
+}
+impl<'a> HookArgs<'a> {
+    pub fn to_pb(&self) -> proto::RegHookReply {
+        proto::RegHookReply {
+            call_id: 0,
+            arguments: serde_json::to_string(&self.arguments).unwrap(),
+            original_result: self.original_result.as_ref().map(|it| it.to_string()),
+            session: self.session.0.token().to_string(),
         }
     }
 }

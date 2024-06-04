@@ -3,7 +3,6 @@ use chrono::Utc;
 use dashmap::DashMap;
 use deadpool::managed::Pool;
 use redis::AsyncCommands;
-use tracing::warn;
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
@@ -12,13 +11,14 @@ use std::{
 };
 use tokio::sync::{mpsc, RwLock};
 use tokio_postgres::{types::Type, NoTls};
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
     bail,
     filter::Filter,
     function::Function,
-    hook::{CoreHookCallback, HOOK_POINT_COUNT},
+    hook::{CoreHookCallback, HookAction, HookArgs, HookCallback, HOOK_POINT_COUNT},
     identity::Identity,
     plugins,
     proto::reg_core_hook_request::HookPoint,
@@ -44,6 +44,53 @@ pub struct Inner {
 impl Inner {
     pub async fn register_core_hook(&self, point: HookPoint, filter: Filter, f: CoreHookCallback) {
         self.core_hooks.write().await[point as usize].push((filter, f));
+    }
+
+    pub async fn register_hook(&self, function: &str, before: bool, f: HookCallback) {
+        self.functions.alter(function, |_, orig_f| {
+            if before {
+                Arc::new(move |(session, store), args| {
+                    let orig_f = Arc::clone(&orig_f);
+                    let f = Arc::clone(&f);
+                    Box::pin(async move {
+                        let action = f(HookArgs {
+                            arguments: args,
+                            original_result: None,
+                            session: (session, store),
+                        })
+                        .await?;
+                        match action {
+                            HookAction::None => orig_f((session, store), args).await,
+                            HookAction::UpdateResult(result) => Ok(result),
+                            HookAction::UpdateArgs(new_args) => {
+                                orig_f((session, store), &new_args).await
+                            }
+                        }
+                    })
+                })
+            } else {
+                Arc::new(move |(session, store), args| {
+                    let orig_f = Arc::clone(&orig_f);
+                    let f = Arc::clone(&f);
+                    Box::pin(async move {
+                        let result = orig_f((session, store), args).await?;
+                        let action = f(HookArgs {
+                            arguments: args,
+                            original_result: Some(&result),
+                            session: (session, store),
+                        })
+                        .await?;
+                        match action {
+                            HookAction::None => Ok(result),
+                            HookAction::UpdateResult(new_result) => Ok(new_result),
+                            HookAction::UpdateArgs(_) => {
+                                bail!(@InvalidArgument "UpdateArgs is not allowed in after-hook")
+                            }
+                        }
+                    })
+                })
+            }
+        });
     }
 
     pub async fn register_function(&self, name: String, f: Function) -> Result<()> {

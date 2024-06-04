@@ -1,4 +1,4 @@
-use serde_json::{json, Map};
+use serde_json::json;
 use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 use tokio::sync::RwLock;
 use tokio_postgres::types::Type;
@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::{
     anyhow, bail,
     filter::{Filter, QueryOptions},
+    function::Arguments,
     hook::{CoreHookArgs, ObjectEdits},
     misc::{now_utc, wrap_nom_from_str},
     novi::Novi,
@@ -313,7 +314,7 @@ async fn add_any_hook(novi: &Novi, point: HookPoint, implies: Arc<RwLock<Implies
 async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()> {
     novi.register_function("imply.apply".to_owned(), {
         let implies = implies.clone();
-        Box::new(move |(session, _), args: Map<String, serde_json::Value>| {
+        Arc::new(move |(session, _), args: &Arguments| {
             let implies = implies.clone();
             Box::pin(async move {
                 session.identity.check_perm("imply.apply")?;

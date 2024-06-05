@@ -59,9 +59,7 @@ service Novi {
       returns (stream RegFunctionReply);
   rpc CallFunction(CallFunctionRequest) returns (CallFunctionReply);
 
-  //   rpc GetUser(GetUserRequest) returns (Object);
-  //   rpc CheckPermission(CheckPermissionRequest) returns
-  //   (CheckPermissionReply);
+  rpc CheckPermission(CheckPermissionRequest) returns (CheckPermissionReply);
 }
 
 message LoginRequest {
@@ -242,3 +240,9 @@ message CallFunctionRequest {
   string arguments = 2;
 }
 message CallFunctionReply { string result = 1; }
+
+message CheckPermissionRequest {
+  repeated string permissions = 1;
+  bool bail = 2;
+}
+message CheckPermissionReply { bool ok = 1; }

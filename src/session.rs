@@ -21,7 +21,7 @@ use crate::{
     proto::{query_request::Order, reg_core_hook_request::HookPoint, EventKind},
     query::args_to_ref,
     rpc::{Command, SessionStore},
-    subscribe::{DispatchWorkerCommand, Event, SubscribeCallback, SubscribeOptions},
+    subscribe::{DispatchWorkerCommand, Event, SubscribeCallback, SubscribeOptions, Subscriber},
     tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags},
     token::SessionToken,
     Result,
@@ -184,7 +184,7 @@ impl Session {
             let edits = f(CoreHookArgs {
                 object,
                 old_object,
-                session: Some((self, &store)),
+                session: Ok((self, &store)),
             })
             .await?;
             if freeze {
@@ -636,12 +636,13 @@ impl Session {
         }
         self.novi
             .dispatch_tx
-            .send(DispatchWorkerCommand::NewSub {
+            .send(DispatchWorkerCommand::NewSub(Subscriber {
                 alive: alive.clone(),
                 filter,
+                identity: self.identity.clone(),
                 accept_kinds,
                 callback: Box::new(callback),
-            })
+            }))
             .await
             .map_err(|_| anyhow!(@IOError "dispatcher disconnected"))?;
         Ok(())

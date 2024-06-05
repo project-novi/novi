@@ -131,4 +131,10 @@ impl Identity {
             expire_at,
         })
     }
+
+    pub fn cache_token(self: Arc<Self>) -> IdentityToken {
+        let token = IdentityToken::new();
+        IDENTITIES.insert(token.clone(), self);
+        token
+    }
 }

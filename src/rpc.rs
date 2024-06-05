@@ -570,7 +570,7 @@ impl proto::novi_server::Novi for RpcFacade {
                             .await
                             .map_err(|_| anyhow!(@IOError "core hook client disconnected"))?
                     };
-                    if let Some((session, store)) = args.session {
+                    if let Ok((session, store)) = args.session {
                         Box::pin(session.yield_self(store.clone(), fut))
                     } else {
                         Box::pin(fut)
@@ -765,6 +765,7 @@ impl proto::novi_server::Novi for RpcFacade {
                     move |(session, store): (&mut Session, &SessionStore),
                           arguments: &Arguments| {
                         let token = session.token().to_string();
+                        let identity = session.identity.clone();
                         let call_tx = call_tx.clone();
                         Box::pin(session.yield_self(store.clone(), async move {
                             let (result_tx, result_rx) =
@@ -773,6 +774,7 @@ impl proto::novi_server::Novi for RpcFacade {
                                 call_id: 0,
                                 arguments: serde_json::to_string(arguments).unwrap(),
                                 session: token,
+                                identity: identity.cache_token().to_string(),
                             };
                             if call_tx.send((reply, result_tx)).await.is_err() {
                                 bail!(@IOError "function provider disconnected");

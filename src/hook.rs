@@ -7,6 +7,7 @@ use std::{
 use crate::{
     bail,
     function::{parse_json, Arguments},
+    identity::Identity,
     misc::BoxFuture,
     object::Object,
     proto::{self, required, tags_from_pb},
@@ -54,20 +55,32 @@ pub struct CoreHookArgs<'a> {
     pub object: &'a Object,
     pub old_object: Option<&'a Object>,
 
-    // This can only be None if called from non-session context. The only
+    // This can only be Indentity if called from non-session context. The only
     // non-session context for now should be subscriber callback (BeforeView),
     // so it's safe to assume the presence of session for non-BeforeView hooks.
-    pub session: Option<(&'a mut Session, &'a SessionStore)>,
+    pub session: Result<(&'a mut Session, &'a SessionStore), &'a Arc<Identity>>,
 }
 impl<'a> CoreHookArgs<'a> {
+    pub fn identity(&self) -> &Arc<Identity> {
+        match &self.session {
+            Ok((session, _)) => &session.identity,
+            Err(identity) => identity,
+        }
+    }
+
     pub fn to_pb(&self) -> proto::RegCoreHookReply {
-        // TODO: Transmiting session should be optional in order to save
-        // bandwidth
+        // TODO: Transmiting session & identity should be optional in order to
+        // save bandwidth
         proto::RegCoreHookReply {
             call_id: 0,
             object: Some(self.object.clone().into()),
             old_object: self.old_object.cloned().map(Into::into),
-            session: self.session.as_ref().map(|it| it.0.token().to_string()),
+            session: self
+                .session
+                .as_ref()
+                .ok()
+                .map(|it| it.0.token().to_string()),
+            identity: self.identity().clone().cache_token().to_string(),
         }
     }
 }
@@ -85,6 +98,7 @@ impl<'a> HookArgs<'a> {
             arguments: serde_json::to_string(&self.arguments).unwrap(),
             original_result: self.original_result.as_ref().map(|it| it.to_string()),
             session: self.session.0.token().to_string(),
+            identity: self.session.0.identity.clone().cache_token().to_string(),
         }
     }
 }

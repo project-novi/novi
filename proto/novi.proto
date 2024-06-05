@@ -184,6 +184,7 @@ message RegCoreHookReply {
   Object object = 2;
   optional Object old_object = 3;
   optional string session = 4;
+  string identity = 5;
 }
 
 message HookAction {
@@ -212,6 +213,7 @@ message RegHookReply {
   string arguments = 2;
   optional string original_result = 3;
   string session = 4;
+  string identity = 5;
 }
 
 message RegFunctionRequest {
@@ -232,6 +234,7 @@ message RegFunctionReply {
   uint64 call_id = 1;
   string arguments = 2;
   string session = 3;
+  string identity = 4;
 }
 
 message CallFunctionRequest {

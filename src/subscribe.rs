@@ -13,6 +13,7 @@ use crate::{
     bail,
     filter::Filter,
     hook::CoreHookArgs,
+    identity::Identity,
     misc::BoxFuture,
     novi::Novi,
     object::Object,
@@ -42,38 +43,25 @@ pub(crate) struct Event {
     pub deleted_tags: BTreeSet<String>,
 }
 
+pub(crate) struct Subscriber {
+    pub alive: Arc<AtomicBool>,
+    pub filter: Filter,
+    pub identity: Arc<Identity>,
+    pub accept_kinds: u8,
+    pub callback: SubscribeCallback,
+}
+
 pub(crate) enum DispatchWorkerCommand {
     Event(Event),
-    NewSub {
-        alive: Arc<AtomicBool>,
-        filter: Filter,
-        accept_kinds: u8,
-        callback: SubscribeCallback,
-    },
+    NewSub(Subscriber),
 }
 
 pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchWorkerCommand>) {
-    struct Subscriber {
-        alive: Arc<AtomicBool>,
-        filter: Filter,
-        accept_kinds: u8,
-        callback: SubscribeCallback,
-    }
     let mut subscribers = Vec::new();
     while let Some(obj) = rx.recv().await {
         match obj {
-            DispatchWorkerCommand::NewSub {
-                alive,
-                filter,
-                accept_kinds,
-                callback,
-            } => {
-                subscribers.push(Subscriber {
-                    alive,
-                    filter,
-                    accept_kinds,
-                    callback,
-                });
+            DispatchWorkerCommand::NewSub(sub) => {
+                subscribers.push(sub);
             }
             DispatchWorkerCommand::Event(Event {
                 kind,
@@ -103,7 +91,7 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                                 let edits = f(CoreHookArgs {
                                     object: &object,
                                     old_object: None,
-                                    session: None,
+                                    session: Err(&sub.identity),
                                 })
                                 .await?;
                                 if !edits.is_empty() {

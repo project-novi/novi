@@ -258,8 +258,10 @@ async fn add_imply_hook(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()
         let implies = implies.clone();
         Box::new(move |args: CoreHookArgs| {
             let implies = implies.clone();
-            let (session, _) = args.session.unwrap();
+            let identity = args.identity().clone();
+            let (session, _) = args.session.ok().unwrap();
             Box::pin(async move {
+                identity.check_perm("imply.create")?;
                 let imply = Imply::from_object(args.object)?;
                 let mut implies = implies.write().await;
                 let result = implies.apply_new_imply(session, &imply).await;
@@ -277,8 +279,10 @@ async fn add_imply_hook(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()
         "~@imply".parse()?,
         Box::new(move |args: CoreHookArgs| {
             let implies = implies.clone();
-            let (session, _) = args.session.unwrap();
+            let identity = args.identity().clone();
+            let (session, _) = args.session.ok().unwrap();
             Box::pin(async move {
+                identity.check_perm("imply.edit")?;
                 let imply = Imply::from_object(args.object)?;
                 let mut implies = implies.write().await;
                 implies.implies.remove(&args.object.id);

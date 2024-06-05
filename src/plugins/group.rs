@@ -13,7 +13,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
         HookPoint::AfterDelete,
         "@group".parse()?,
         Box::new(move |args: CoreHookArgs| {
-            let (session, _) = args.session.unwrap();
+            let (session, _) = args.session.ok().unwrap();
             Box::pin(async move {
                 debug!(id = %args.object.id, "cascade delete objects");
                 let children = session

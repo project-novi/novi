@@ -13,6 +13,8 @@ use crate::{
     Result,
 };
 
+pub const EXPIRATION_SECS: u64 = 60 * 60 * 24 * 7; // 1 week
+
 pub(crate) static IDENTITIES: Lazy<DashMap<IdentityToken, Arc<Identity>>> =
     Lazy::new(Default::default);
 
@@ -81,7 +83,7 @@ impl Identity {
         novi.redis_pool
             .get()
             .await?
-            .set(Self::redis_key(token), data)
+            .set_ex(Self::redis_key(token), data, EXPIRATION_SECS)
             .await?;
         Ok(())
     }

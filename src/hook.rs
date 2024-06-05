@@ -5,8 +5,7 @@ use std::{
 };
 
 use crate::{
-    bail,
-    function::{parse_json, Arguments},
+    function::{parse_json_map, JsonMap},
     identity::Identity,
     misc::BoxFuture,
     object::Object,
@@ -29,21 +28,18 @@ pub type HookCallback =
 pub enum HookAction {
     #[default]
     None,
-    UpdateResult(serde_json::Value),
-    UpdateArgs(Arguments),
+    UpdateResult(JsonMap),
+    UpdateArgs(JsonMap),
 }
 impl HookAction {
     pub fn from_pb(pb: proto::HookAction) -> Result<Self> {
         if let Some(result_or_args) = pb.result_or_args {
-            let result_or_args = parse_json(result_or_args)?;
-            if pb.update_args {
-                match result_or_args {
-                    serde_json::Value::Object(args) => Ok(Self::UpdateArgs(args)),
-                    _ => bail!(@InvalidArgument "invalid update_args value"),
-                }
+            let result_or_args = parse_json_map(result_or_args)?;
+            Ok(if pb.update_args {
+                Self::UpdateArgs(result_or_args)
             } else {
-                Ok(Self::UpdateResult(result_or_args))
-            }
+                Self::UpdateResult(result_or_args)
+            })
         } else {
             Ok(Self::None)
         }
@@ -86,16 +82,16 @@ impl<'a> CoreHookArgs<'a> {
 }
 
 pub struct HookArgs<'a> {
-    pub arguments: &'a Arguments,
+    pub arguments: &'a JsonMap,
     // None if the hook is a before-hook
-    pub original_result: Option<&'a serde_json::Value>,
+    pub original_result: Option<&'a JsonMap>,
     pub session: (&'a mut Session, &'a SessionStore),
 }
 impl<'a> HookArgs<'a> {
     pub fn to_pb(&self) -> proto::RegHookReply {
         proto::RegHookReply {
             call_id: 0,
-            arguments: serde_json::to_string(&self.arguments).unwrap(),
+            arguments: self.arguments.to_string(),
             original_result: self.original_result.as_ref().map(|it| it.to_string()),
             session: self.session.0.token().to_string(),
             identity: self.session.0.identity.clone().cache_token().to_string(),

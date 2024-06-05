@@ -30,6 +30,7 @@ tokio-stream = { version = "0.1.15", features = ["net"] }
 tonic = "0.11.0"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+url = "2.5.0"
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
 
 [build-dependencies]

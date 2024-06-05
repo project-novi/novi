@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::{
     anyhow, bail,
     filter::{Filter, QueryOptions},
-    function::Arguments,
+    function::JsonMap,
     hook::{CoreHookArgs, HOOK_POINT_COUNT},
     identity::Identity,
     novi::Novi,
@@ -652,8 +652,8 @@ impl Session {
         &mut self,
         store: SessionStore,
         name: &str,
-        arguments: &Arguments,
-    ) -> Result<serde_json::Value> {
+        arguments: &JsonMap,
+    ) -> Result<JsonMap> {
         let novi = self.novi.clone();
         let Some(function) = novi.functions.get(name) else {
             bail!(@FunctionNotFound "function not found")

@@ -1,11 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::{
-    collections::BTreeSet,
-    fmt::{Display, Formatter, Write},
-    ops::AddAssign,
-    str::FromStr,
-};
+use std::{collections::BTreeSet, fmt, ops::AddAssign, str::FromStr};
 use tokio_postgres::types::Type;
 
 use crate::{
@@ -104,8 +99,9 @@ impl Default for Filter {
     }
 }
 
-impl Display for Filter {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Filter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use fmt::Write;
         match self {
             Self::Atom { tag, kind, prefix } => {
                 (match kind {

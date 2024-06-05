@@ -159,7 +159,7 @@ impl Novi {
             dispatch_rx,
         ));
 
-        plugins::files::init(&result).await;
+        plugins::files::init(&result).await?;
         plugins::group::init(&result).await?;
         plugins::implies::init(&result).await?;
         plugins::users::init(&result).await?;

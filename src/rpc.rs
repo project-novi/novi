@@ -19,7 +19,7 @@ use tracing::{debug, info, warn};
 use crate::{
     anyhow, bail,
     filter::{Filter, QueryOptions, TimeRange},
-    function::{parse_arguments, parse_json, Arguments},
+    function::{parse_arguments, parse_json_map, JsonMap},
     hook::{CoreHookArgs, HookAction, HookArgs, ObjectEdits},
     identity::{Identity, IDENTITIES},
     misc::{utc_from_timestamp, BoxFuture},
@@ -187,8 +187,13 @@ impl proto::novi_server::Novi for RpcFacade {
         }
         let user = self.0.novi.get_user(required(req.user)?.into()).await?;
         let identity = self.0.novi.login_as(user);
-        let token = IdentityToken::new();
-        identity.save_to_db(&self.0.novi, &token).await?;
+        let token = if req.temporary {
+            let token = IdentityToken::new();
+            identity.save_to_db(&self.0.novi, &token).await?;
+            token
+        } else {
+            identity.cache_token()
+        };
         Ok(Response::new(proto::LoginAsReply {
             identity: token.to_string(),
         }))
@@ -711,7 +716,7 @@ impl proto::novi_server::Novi for RpcFacade {
         let (stream_tx, stream_rx) = mpsc::channel::<Result<proto::RegFunctionReply, Status>>(8);
         let (call_tx, mut call_rx) = mpsc::channel::<(
             proto::RegFunctionReply,
-            oneshot::Sender<Result<serde_json::Value>>,
+            oneshot::Sender<Result<JsonMap>>,
         )>(32);
         tokio::spawn({
             let novi = self.0.novi.clone();
@@ -743,7 +748,7 @@ impl proto::novi_server::Novi for RpcFacade {
                                     Some(call_result::Result::Error(err)) => Err(Error::from_pb(err)),
                                     _ => Err(anyhow!(@InvalidArgument "invalid response from client")),
                                 };
-                                let result = result.and_then(parse_json);
+                                let result = result.and_then(parse_json_map);
                                 let _ = tx.send(result);
                             } else {
                                 warn!(call_id = result.call_id, "invalid call id from hook client");
@@ -763,16 +768,16 @@ impl proto::novi_server::Novi for RpcFacade {
                 name,
                 Arc::new(
                     move |(session, store): (&mut Session, &SessionStore),
-                          arguments: &Arguments| {
+                          arguments: &JsonMap| {
                         let token = session.token().to_string();
                         let identity = session.identity.clone();
                         let call_tx = call_tx.clone();
                         Box::pin(session.yield_self(store.clone(), async move {
                             let (result_tx, result_rx) =
-                                oneshot::channel::<Result<serde_json::Value>>();
+                                oneshot::channel::<Result<JsonMap>>();
                             let reply = proto::RegFunctionReply {
                                 call_id: 0,
-                                arguments: serde_json::to_string(arguments).unwrap(),
+                                arguments: arguments.to_string(),
                                 session: token,
                                 identity: identity.cache_token().to_string(),
                             };

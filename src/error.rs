@@ -3,7 +3,7 @@ use strum::{AsRefStr, EnumString};
 use tonic::{metadata::KeyAndValueRef, Code, Status};
 use tracing::error;
 
-const METADATA_KEYS: &[&str] = &["permission", "id", "tag", "type"];
+const METADATA_KEYS: &[&str] = &["argument", "permission", "id", "tag", "type"];
 fn metadata_key_to_static(key: &str) -> Option<&'static str> {
     METADATA_KEYS.iter().find(|it| **it == key).copied()
 }
@@ -17,7 +17,7 @@ macro_rules! anyhow {
             .with_metadata(vec![$(($name, $val.to_string())),*])
     };
     (@$kind:ident $(($name:literal => $val:expr))*) => {
-        $crate::Error::new($crate::ErrorKind::$kind, Some(anyhow::anyhow!()))
+        $crate::Error::new($crate::ErrorKind::$kind, Some(anyhow::anyhow!("")))
             .with_metadata(vec![$(($name, $val.to_string())),*])
     };
     (@$kind:ident) => {
@@ -234,6 +234,8 @@ pub enum ErrorKind {
     #[default]
     Unspecified,
 
+    Unsupported,
+
     DBError,
     IOError,
 
@@ -255,10 +257,14 @@ impl ErrorKind {
         match self {
             ErrorKind::Unspecified | ErrorKind::DBError | ErrorKind::IOError => Code::Internal,
 
+            ErrorKind::Unsupported => Code::Unimplemented,
+
             ErrorKind::PermissionDenied => Code::PermissionDenied,
             ErrorKind::IdentityExpired => Code::Unauthenticated,
 
-            ErrorKind::FileNotFound | ErrorKind::FunctionNotFound | ErrorKind::ObjectNotFound => Code::NotFound,
+            ErrorKind::FileNotFound | ErrorKind::FunctionNotFound | ErrorKind::ObjectNotFound => {
+                Code::NotFound
+            }
 
             ErrorKind::InvalidArgument | ErrorKind::InvalidTag | ErrorKind::InvalidObject => {
                 Code::InvalidArgument

@@ -1,14 +1,13 @@
-use serde_json::json;
-use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, iter, str::FromStr, sync::Arc};
 use tokio::sync::RwLock;
 use tokio_postgres::types::Type;
 use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    anyhow, bail,
+    anyhow,
     filter::{Filter, QueryOptions},
-    function::Arguments,
+    function::JsonMap,
     hook::{CoreHookArgs, ObjectEdits},
     misc::{now_utc, wrap_nom_from_str},
     novi::Novi,
@@ -318,23 +317,18 @@ async fn add_any_hook(novi: &Novi, point: HookPoint, implies: Arc<RwLock<Implies
 async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()> {
     novi.register_function("imply.apply".to_owned(), {
         let implies = implies.clone();
-        Arc::new(move |(session, _), args: &Arguments| {
+        Arc::new(move |(session, _), args: &JsonMap| {
             let implies = implies.clone();
             Box::pin(async move {
                 session.identity.check_perm("imply.apply")?;
-                let Some(imply) = args.get("imply").and_then(|it| it.as_str()) else {
-                    bail!(@InvalidArgument "missing imply argument")
-                };
-                let imply: Imply = imply.parse()?;
+                let imply: Imply = args.get_str("imply")?.parse()?;
                 let affected = implies
                     .read()
                     .await
                     .apply_new_imply(session, &imply)
                     .await?;
 
-                Ok(json!({
-                    "affected": affected,
-                }))
+                Ok(iter::once(("affected".to_owned(), affected.into())).collect())
             })
         })
     })

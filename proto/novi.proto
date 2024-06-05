@@ -68,7 +68,10 @@ message LoginRequest {
 }
 message LoginReply { string identity = 1; }
 
-message LoginAsRequest { UUID user = 1; }
+message LoginAsRequest {
+  UUID user = 1;
+  bool temporary = 2;
+}
 message LoginAsReply { string identity = 1; }
 
 message UseMasterKeyRequest { string key = 1; }

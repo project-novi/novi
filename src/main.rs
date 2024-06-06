@@ -36,7 +36,7 @@ fn init_log() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_log();
-    let config: Config = serde_yaml::from_reader(std::fs::File::open("server.yaml")?)?;
+    let config: Config = serde_yaml::from_reader(std::fs::File::open("config.yaml")?)?;
     let server = Novi::new(config).await?;
 
     let facade = rpc::RpcFacade::new(server);

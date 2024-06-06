@@ -188,11 +188,11 @@ impl proto::novi_server::Novi for RpcFacade {
         let user = self.0.novi.get_user(required(req.user)?.into()).await?;
         let identity = self.0.novi.login_as(user);
         let token = if req.temporary {
+            identity.cache_token()
+        } else {
             let token = IdentityToken::new();
             identity.save_to_db(&self.0.novi, &token).await?;
             token
-        } else {
-            identity.cache_token()
         };
         Ok(Response::new(proto::LoginAsReply {
             identity: token.to_string(),
@@ -714,10 +714,8 @@ impl proto::novi_server::Novi for RpcFacade {
         info!(name, "register function");
 
         let (stream_tx, stream_rx) = mpsc::channel::<Result<proto::RegFunctionReply, Status>>(8);
-        let (call_tx, mut call_rx) = mpsc::channel::<(
-            proto::RegFunctionReply,
-            oneshot::Sender<Result<JsonMap>>,
-        )>(32);
+        let (call_tx, mut call_rx) =
+            mpsc::channel::<(proto::RegFunctionReply, oneshot::Sender<Result<JsonMap>>)>(32);
         tokio::spawn({
             let novi = self.0.novi.clone();
             let name = name.clone();
@@ -767,14 +765,12 @@ impl proto::novi_server::Novi for RpcFacade {
             .register_function(
                 name,
                 Arc::new(
-                    move |(session, store): (&mut Session, &SessionStore),
-                          arguments: &JsonMap| {
+                    move |(session, store): (&mut Session, &SessionStore), arguments: &JsonMap| {
                         let token = session.token().to_string();
                         let identity = session.identity.clone();
                         let call_tx = call_tx.clone();
                         Box::pin(session.yield_self(store.clone(), async move {
-                            let (result_tx, result_rx) =
-                                oneshot::channel::<Result<JsonMap>>();
+                            let (result_tx, result_rx) = oneshot::channel::<Result<JsonMap>>();
                             let reply = proto::RegFunctionReply {
                                 call_id: 0,
                                 arguments: arguments.to_string(),

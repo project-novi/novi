@@ -2,6 +2,12 @@
 name = "novi"
 version = "0.1.0"
 edition = "2021"
+authors = ["Mivik <mivikq@gmail.com>"]
+description = "Novi is a object-tagging system"
+keywords = ["tagging", "filesystem", "p2p", "storage"]
+categories = ["command line utilities", "filesystem"]
+license = "Apache-2.0"
+repository = "https://github.com/project-novi/novi"
 
 [dependencies]
 anyhow = { version = "1.0.83", features = ["backtrace"] }

@@ -790,6 +790,7 @@ impl proto::novi_server::Novi for RpcFacade {
                         }))
                     },
                 ),
+                init.permission,
             )
             .await?;
 

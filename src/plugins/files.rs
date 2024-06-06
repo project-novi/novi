@@ -94,12 +94,14 @@ pub async fn init(novi: &Novi) -> Result<()> {
                             .call_function(store.clone(), "file.url", &args)
                             .await
                     }
+                    "http" | "https" => Ok(iter::once(("url".to_owned(), url_str.into())).collect()),
                     scheme => {
                         bail!(@Unsupported "scheme {scheme} is not supported");
                     }
                 }
             })
         }),
+        None,
     )
     .await?;
 
@@ -123,6 +125,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                 todo!()
             })
         }),
+        Some("file.pin".to_owned())
     )
     .await?;
 

@@ -29,10 +29,15 @@ use crate::{
     Config, Result,
 };
 
+pub(crate) struct FunctionRegistry {
+    pub function: Function,
+    pub permission: Option<String>,
+}
+
 pub struct Inner {
     pub config: Config,
     pub core_hooks: RwLock<[Vec<(Filter, CoreHookCallback)>; HOOK_POINT_COUNT]>,
-    pub functions: DashMap<String, Function>,
+    pub functions: DashMap<String, FunctionRegistry>,
     pub dispatch_tx: mpsc::Sender<DispatchWorkerCommand>,
     pub guest_user: Arc<User>,
     pub guest_identity: Arc<Identity>,
@@ -47,57 +52,61 @@ impl Inner {
     }
 
     pub async fn register_hook(&self, function: &str, before: bool, f: HookCallback) {
-        self.functions.alter(function, |_, orig_f| {
-            if before {
-                Arc::new(move |(session, store), args| {
-                    let orig_f = Arc::clone(&orig_f);
-                    let f = Arc::clone(&f);
-                    Box::pin(async move {
-                        let action = f(HookArgs {
-                            arguments: args,
-                            original_result: None,
-                            session: (session, store),
-                        })
-                        .await?;
-                        match action {
-                            HookAction::None => orig_f((session, store), args).await,
-                            HookAction::UpdateResult(result) => Ok(result),
-                            HookAction::UpdateArgs(new_args) => {
-                                orig_f((session, store), &new_args).await
+        self.functions.alter(function, |_, reg| {
+            let orig_f = reg.function;
+            FunctionRegistry {
+                function: if before {
+                    Arc::new(move |(session, store), args| {
+                        let orig_f = Arc::clone(&orig_f);
+                        let f = Arc::clone(&f);
+                        Box::pin(async move {
+                            let action = f(HookArgs {
+                                arguments: args,
+                                original_result: None,
+                                session: (session, store),
+                            })
+                            .await?;
+                            match action {
+                                HookAction::None => orig_f((session, store), args).await,
+                                HookAction::UpdateResult(result) => Ok(result),
+                                HookAction::UpdateArgs(new_args) => {
+                                    orig_f((session, store), &new_args).await
+                                }
                             }
-                        }
-                    })
-                })
-            } else {
-                Arc::new(move |(session, store), args| {
-                    let orig_f = Arc::clone(&orig_f);
-                    let f = Arc::clone(&f);
-                    Box::pin(async move {
-                        let result = orig_f((session, store), args).await?;
-                        let action = f(HookArgs {
-                            arguments: args,
-                            original_result: Some(&result),
-                            session: (session, store),
                         })
-                        .await?;
-                        match action {
-                            HookAction::None => Ok(result),
-                            HookAction::UpdateResult(new_result) => Ok(new_result),
-                            HookAction::UpdateArgs(_) => {
-                                bail!(@InvalidArgument "UpdateArgs is not allowed in after-hook")
-                            }
-                        }
                     })
-                })
+                } else {
+                    Arc::new(move |(session, store), args| {
+                        let orig_f = Arc::clone(&orig_f);
+                        let f = Arc::clone(&f);
+                        Box::pin(async move {
+                            let result = orig_f((session, store), args).await?;
+                            let action = f(HookArgs {
+                                arguments: args,
+                                original_result: Some(&result),
+                                session: (session, store),
+                            })
+                            .await?;
+                            match action {
+                                HookAction::None => Ok(result),
+                                HookAction::UpdateResult(new_result) => Ok(new_result),
+                                HookAction::UpdateArgs(_) => {
+                                    bail!(@InvalidArgument "UpdateArgs is not allowed in after-hook")
+                                }
+                            }
+                        })
+                    })
+                },
+                permission: reg.permission,
             }
         });
     }
 
-    pub async fn register_function(&self, name: String, f: Function) -> Result<()> {
+    pub async fn register_function(&self, name: String, function: Function, permission: Option<String>) -> Result<()> {
         use dashmap::mapref::entry::Entry;
         match self.functions.entry(name) {
             Entry::Vacant(entry) => {
-                entry.insert(f);
+                entry.insert(FunctionRegistry { function, permission });
             }
             Entry::Occupied(_) => {
                 bail!(@InvalidArgument "function already exists");

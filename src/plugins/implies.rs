@@ -315,23 +315,27 @@ async fn add_any_hook(novi: &Novi, point: HookPoint, implies: Arc<RwLock<Implies
 }
 
 async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()> {
-    novi.register_function("imply.apply".to_owned(), {
-        let implies = implies.clone();
-        Arc::new(move |(session, _), args: &JsonMap| {
+    novi.register_function(
+        "imply.apply".to_owned(),
+        {
             let implies = implies.clone();
-            Box::pin(async move {
-                session.identity.check_perm("imply.apply")?;
-                let imply: Imply = args.get_str("imply")?.parse()?;
-                let affected = implies
-                    .read()
-                    .await
-                    .apply_new_imply(session, &imply)
-                    .await?;
+            Arc::new(move |(session, _), args: &JsonMap| {
+                let implies = implies.clone();
+                Box::pin(async move {
+                    session.identity.check_perm("imply.apply")?;
+                    let imply: Imply = args.get_str("imply")?.parse()?;
+                    let affected = implies
+                        .read()
+                        .await
+                        .apply_new_imply(session, &imply)
+                        .await?;
 
-                Ok(iter::once(("affected".to_owned(), affected.into())).collect())
+                    Ok(iter::once(("affected".to_owned(), affected.into())).collect())
+                })
             })
-        })
-    })
+        },
+        Some("imply.apply".to_owned()),
+    )
     .await
 }
 

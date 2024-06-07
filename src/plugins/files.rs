@@ -1,76 +1,23 @@
-use std::{
-    iter,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::Arc,
-};
-use tracing::warn;
+use std::{iter, path::PathBuf, str::FromStr, sync::Arc};
 use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    anyhow, bail,
-    filter::Filter,
-    function::JsonMap,
-    hook::{CoreHookArgs, ObjectEdits},
-    novi::Novi,
-    proto::reg_core_hook_request::HookPoint,
-    storage::{StorageContent, StorageContext},
-    Result,
+    anyhow, bail, function::JsonMap, ipfs::StorageContent, novi::Novi, Result
 };
 
-fn file_path(storage_path: &Path, id: Uuid, variant: &str) -> PathBuf {
-    if variant == "original" {
-        storage_path.join(id.to_string())
-    } else {
-        storage_path.join(format!("{id}.{variant}"))
-    }
-}
-
 pub async fn init(novi: &Novi) -> Result<()> {
-    let storage_path = Arc::new(novi.config.storage_path.clone());
-    novi.register_core_hook(HookPoint::AfterDelete, Filter::all(), {
-        let storage_path = storage_path.clone();
-        Box::new(move |args: CoreHookArgs| {
-            let storage_path = storage_path.clone();
-            Box::pin(async move {
-                for (variant, _) in args.object.subtags("@file") {
-                    let path = file_path(&storage_path, args.object.id, variant);
-                    if let Err(err) = tokio::fs::remove_file(path).await {
-                        warn!(id = %args.object.id, variant, ?err, "failed to delete object file");
-                    }
-                }
-                Ok(ObjectEdits::default())
-            })
-        })
-    })
-    .await;
-
-    // This function is intended to be hooked to extend functionality, the
-    // default implementation only handles HTTP, HTTPs, IPFS and references.
-    let ipfs_gateway = Arc::new(novi.config.ipfs_gateway.clone());
     novi.register_function(
         "file.url".to_owned(),
         Arc::new(move |(session, store), args: &JsonMap| {
-            let storage_path = storage_path.clone();
-            let ipfs_gateway = Arc::clone(&ipfs_gateway);
             Box::pin(async move {
                 let depth_limit = args.get_u64("depth_limit").unwrap_or(5);
-                let prefer_local = args.get_bool("prefer_local").unwrap_or(false);
                 let id = args.get_id("id")?;
                 let variant = args.get_str("variant").unwrap_or("original");
 
                 let object = session.get_object(Some(store.clone()), id).await?;
-                let mut url_str = object.get_file(variant)?;
-                if prefer_local && file_path(&storage_path, id, variant).exists() {
-                    url_str = None;
-                }
-                let Some(url_str) = url_str else {
-                    return Ok(iter::once((
-                        "url".to_owned(),
-                        format!("file://{id}/{variant}").into(),
-                    ))
-                    .collect());
+                let Some(url_str) = object.get_file(variant)? else {
+                    bail!(@FileNotFound "null file field");
                 };
                 let Ok(url) = Url::parse(url_str) else {
                     bail!(@InvalidArgument "invalid URL")
@@ -95,17 +42,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                             .call_function(store.clone(), "file.url", &args)
                             .await;
                     }
-                    "http" | "https" => url_str.into(),
-                    "ipfs" => {
-                        let Some(cid) = url.host_str() else {
-                            bail!(@InvalidArgument "invalid CID")
-                        };
-                        let path = url.path();
-                        format!("{ipfs_gateway}/ipfs/{cid}{path}").into()
-                    }
-                    scheme => {
-                        bail!(@Unsupported "scheme {scheme} is not supported");
-                    }
+                    _ => url_str.into(),
                 };
                 Ok(iter::once(("url".to_owned(), url)).collect())
             })
@@ -126,7 +63,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     let storage = args.get_str("storage").unwrap_or("default");
                     let filename = args.get_str("filename").map(str::to_owned).ok();
 
-                    let Some(storage) = novi.config.storages.get(storage) else {
+                    let Some(client) = novi.config.ipfs_clients.get(storage) else {
                         bail!(@InvalidArgument "invalid storage")
                     };
 
@@ -138,36 +75,28 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     }
 
                     let content = if let Ok(url) = args.get_str("url") {
-                        if let Some(path) = url.strip_prefix("file://") {
-                            StorageContent::File(PathBuf::from(path))
-                        } else {
-                            let resp = reqwest::get(url).await.and_then(|it| it.error_for_status());
-                            let resp = match resp {
-                                Ok(resp) => resp,
-                                Err(err) => bail!(@IOError "failed to download file: {err:?}"),
-                            };
-                            StorageContent::Response(resp)
-                        }
+                        let resp = reqwest::get(url).await.and_then(|it| it.error_for_status());
+                        let resp = match resp {
+                            Ok(resp) => resp,
+                            Err(err) => bail!(@IOError "failed to download file: {err:?}"),
+                        };
+                        StorageContent::Response(resp)
                     } else if let Ok(path) = args.get_str("path") {
                         StorageContent::File(PathBuf::from(path))
                     } else {
                         bail!(@InvalidArgument "missing URL or path")
                     };
-                    let url = storage
+                    let url = client
                         .put(
-                            StorageContext {
-                                id,
-                                variant,
-                                filename: filename.as_deref(),
-                            },
                             content,
+                            filename,
                         )
                         .await?;
                     session
                         .update_object(
                             Some(store.clone()),
                             id,
-                            iter::once((format!("@file:{variant}"), url)).collect(),
+                            iter::once((format!("@file:{variant}"), Some(url))).collect(),
                             false,
                         )
                         .await?;

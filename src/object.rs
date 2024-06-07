@@ -4,6 +4,7 @@ use tokio_postgres::Row;
 use uuid::Uuid;
 
 use crate::{
+    anyhow,
     misc::now_utc,
     proto::{self, uuid_to_pb},
     tag::{is_scope, TagDict, TagValue, Tags},
@@ -39,6 +40,11 @@ impl Object {
 
     pub fn get(&self, tag: &str) -> Option<Option<&str>> {
         self.tags.get(tag).map(|it| it.value.as_deref())
+    }
+
+    pub fn get_file(&self, variant: &str) -> Result<Option<&str>> {
+        self.get(&format!("@file:{variant}"))
+            .ok_or_else(|| anyhow!(@FileNotFound "file not found"))
     }
 
     pub fn remove_tag(&mut self, tag: &str) -> Option<TagValue> {

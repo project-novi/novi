@@ -120,6 +120,8 @@ impl Inner {
 pub struct Novi(Arc<Inner>);
 impl Novi {
     pub async fn new(config: Config) -> Result<Self> {
+        config.validate()?;
+
         let pg_pool = config
             .database
             .create_pool(Some(deadpool_postgres::Runtime::Tokio1), NoTls)?;

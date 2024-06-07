@@ -461,10 +461,10 @@ impl Filter {
         self.build_sql(&mut q, identity, options.checkpoint);
 
         q.order(match options.order {
-            Order::CreatedAsc => "created asc",
             Order::CreatedDesc => "created desc",
-            Order::UpdatedAsc => "updated asc",
+            Order::CreatedAsc => "created asc",
             Order::UpdatedDesc => "updated desc",
+            Order::UpdatedAsc => "updated asc",
         });
         let mut add_range = |field: &str, range: TimeRange| {
             if let Some(lower) = range.0 {

@@ -119,7 +119,7 @@ impl Inner {
 #[derive(Clone)]
 pub struct Novi(Arc<Inner>);
 impl Novi {
-    pub async fn new(config: Config) -> Result<Self> {
+    pub async fn new(mut config: Config) -> Result<Self> {
         config.validate()?;
 
         let pg_pool = config

@@ -13,6 +13,7 @@ mod proto;
 mod query;
 mod rpc;
 mod session;
+mod storage;
 mod subscribe;
 mod tag;
 mod token;

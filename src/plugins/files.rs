@@ -15,6 +15,7 @@ use crate::{
     hook::{CoreHookArgs, ObjectEdits},
     novi::Novi,
     proto::reg_core_hook_request::HookPoint,
+    storage::{StorageContent, StorageContext},
     Result,
 };
 
@@ -24,21 +25,6 @@ fn file_path(storage_path: &Path, id: Uuid, variant: &str) -> PathBuf {
     } else {
         storage_path.join(format!("{id}.{variant}"))
     }
-}
-
-async fn transfer_file(url: &str, to: &str, filename: Option<String>) -> reqwest::Result<()> {
-    use reqwest::multipart::{Form, Part};
-
-    let client = reqwest::Client::new();
-    let resp = client.get(url).send().await?.error_for_status()?;
-
-    let mut file_part = Part::stream(resp);
-    if let Some(filename) = filename {
-        file_part = file_part.file_name(filename);
-    }
-    let form = Form::new().part("file", file_part);
-    client.post(to).multipart(form).send().await?;
-    Ok(())
 }
 
 pub async fn init(novi: &Novi) -> Result<()> {
@@ -70,7 +56,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
             let ipfs_gateway = Arc::clone(&ipfs_gateway);
             Box::pin(async move {
                 let depth_limit = args.get_u64("depth_limit").unwrap_or(5);
-                let prefer_local = args.get_bool("prefer_local").unwrap_or(true);
+                let prefer_local = args.get_bool("prefer_local").unwrap_or(false);
                 let id = args.get_id("id")?;
                 let variant = args.get_str("variant").unwrap_or("original");
 
@@ -129,7 +115,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
     .await?;
 
     novi.register_function(
-        "file.download".to_owned(),
+        "file.store".to_owned(),
         {
             let novi = novi.clone();
             Arc::new(move |(session, store), args: &JsonMap| {
@@ -137,12 +123,11 @@ pub async fn init(novi: &Novi) -> Result<()> {
                 Box::pin(async move {
                     let id = args.get_id("id")?;
                     let variant = args.get_str("variant").unwrap_or("original");
-                    let url = args.get_str("url")?;
-                    let api = args.get_str("api").unwrap_or("default");
+                    let storage = args.get_str("storage").unwrap_or("default");
                     let filename = args.get_str("filename").map(str::to_owned).ok();
 
-                    let Some(api_url) = novi.config.ipfs_apis.get(api) else {
-                        bail!(@InvalidArgument "invalid API")
+                    let Some(storage) = novi.config.storages.get(storage) else {
+                        bail!(@InvalidArgument "invalid storage")
                     };
 
                     let object = session.get_object(Some(store.clone()), id).await?;
@@ -152,10 +137,40 @@ pub async fn init(novi: &Novi) -> Result<()> {
                         bail!(@InvalidState "file already exists");
                     }
 
-                    let to = format!("{api_url}/api/v0/add");
-                    if let Err(err) = transfer_file(url, &to, filename).await {
-                        bail!(@InvalidArgument "failed to download file: {err}")
-                    }
+                    let content = if let Ok(url) = args.get_str("url") {
+                        if let Some(path) = url.strip_prefix("file://") {
+                            StorageContent::File(PathBuf::from(path))
+                        } else {
+                            let resp = reqwest::get(url).await.and_then(|it| it.error_for_status());
+                            let resp = match resp {
+                                Ok(resp) => resp,
+                                Err(err) => bail!(@IOError "failed to download file: {err:?}"),
+                            };
+                            StorageContent::Response(resp)
+                        }
+                    } else if let Ok(path) = args.get_str("path") {
+                        StorageContent::File(PathBuf::from(path))
+                    } else {
+                        bail!(@InvalidArgument "missing URL or path")
+                    };
+                    let url = storage
+                        .put(
+                            StorageContext {
+                                id,
+                                variant,
+                                filename: filename.as_deref(),
+                            },
+                            content,
+                        )
+                        .await?;
+                    session
+                        .update_object(
+                            Some(store.clone()),
+                            id,
+                            iter::once((format!("@file:{variant}"), url)).collect(),
+                            false,
+                        )
+                        .await?;
 
                     Ok(JsonMap::default())
                 })

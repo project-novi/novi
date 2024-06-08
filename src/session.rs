@@ -260,6 +260,14 @@ impl Session {
         }
     }
 
+    pub(crate) fn replace_identity(&mut self, identity: Arc<Identity>) -> Arc<Identity> {
+        std::mem::replace(&mut self.identity, identity)
+    }
+
+    pub(crate) fn replace_internal(&mut self) -> Arc<Identity> {
+        self.replace_identity(self.novi.internal_identity.clone())
+    }
+
     /// Save an object to the database.
     pub(crate) async fn save_object(&self, object: &Object) -> Result<()> {
         let sql = "

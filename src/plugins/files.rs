@@ -92,14 +92,17 @@ pub async fn init(novi: &Novi) -> Result<()> {
                             filename,
                         )
                         .await?;
-                    session
+                    let old_identity = session.replace_internal();
+                    let result = session
                         .update_object(
                             Some(store.clone()),
                             id,
                             iter::once((format!("@file:{variant}"), Some(url))).collect(),
                             false,
                         )
-                        .await?;
+                        .await;
+                    session.replace_identity(old_identity);
+                    result?;
 
                     Ok(JsonMap::default())
                 })

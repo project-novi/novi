@@ -51,10 +51,6 @@ impl Object {
         self.tags.remove(tag)
     }
 
-    pub fn into_pairs(self) -> impl Iterator<Item = (String, Option<String>)> {
-        self.tags.into_iter().map(|(k, v)| (k, v.value))
-    }
-
     pub fn update(&mut self, tags: Tags, force: bool) -> bool {
         let time = now_utc();
         let mut updated = force;

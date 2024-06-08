@@ -1,13 +1,10 @@
 use arc_swap::ArcSwap;
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use once_cell::sync::Lazy;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashSet, sync::Arc};
 use uuid::Uuid;
 
-use crate::{anyhow, bail, model::Model, object::Object, tag::Tags, Error, Result};
+use crate::{anyhow, bail, object::Object, Error, Result};
 
 pub type UserRef = Arc<ArcSwap<User>>;
 
@@ -18,7 +15,6 @@ pub static INTERNAL_USER: Lazy<UserRef> = Lazy::new(|| {
         password: None,
         roles: std::iter::once("admin".to_owned()).collect(),
         perms: HashSet::new(),
-        tags: HashMap::new(),
     }))
 });
 
@@ -29,8 +25,6 @@ pub struct User {
 
     pub roles: HashSet<String>,
     pub perms: HashSet<String>,
-
-    pub tags: HashMap<String, Option<String>>,
 }
 
 impl User {
@@ -95,27 +89,6 @@ impl User {
     }
 }
 
-impl Model for User {
-    fn id(&self) -> Uuid {
-        self.id.unwrap()
-    }
-
-    fn to_tags(&self) -> Tags {
-        let mut tags = self.tags.clone();
-        tags.insert("@user".to_owned(), None);
-        tags.insert("@user.name".to_owned(), Some(self.name.clone()));
-        tags.insert("@user.password".to_owned(), self.password.clone());
-        for role in &self.roles {
-            tags.insert(format!("@user.role:{role}"), None);
-        }
-        for perm in &self.perms {
-            tags.insert(format!("@user.perm:{perm}"), None);
-        }
-
-        tags
-    }
-}
-
 impl TryFrom<Object> for User {
     type Error = Error;
 
@@ -127,23 +100,8 @@ impl TryFrom<Object> for User {
             let name = value.remove_tag("@user.name")?.value?;
             let password = value.remove_tag("@user.password")?.value;
 
-            let mut roles = HashSet::new();
-            let mut perms = HashSet::new();
-
-            let tags = value
-                .into_pairs()
-                .filter(|(tag, _)| {
-                    if let Some(role) = tag.strip_prefix("@user.role:") {
-                        roles.insert(role.to_owned());
-                        false
-                    } else if let Some(perm) = tag.strip_prefix("@user.perm:") {
-                        perms.insert(perm.to_owned());
-                        false
-                    } else {
-                        true
-                    }
-                })
-                .collect();
+            let roles = value.subtags("@user.role").map(|it| it.0.to_owned()).collect();
+            let perms = value.subtags("@user.perm").map(|it| it.0.to_owned()).collect();
 
             Some(User {
                 id,
@@ -152,8 +110,6 @@ impl TryFrom<Object> for User {
 
                 roles,
                 perms,
-
-                tags,
             })
         }
 

@@ -153,10 +153,6 @@ impl Filter {
         Self::Ands(Vec::new())
     }
 
-    pub fn none() -> Self {
-        Self::Ors(Vec::new())
-    }
-
     pub fn is_all(&self) -> bool {
         matches!(self, Self::Ands(conds) if conds.is_empty())
     }

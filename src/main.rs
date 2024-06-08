@@ -6,7 +6,6 @@ mod hook;
 mod identity;
 mod ipfs;
 mod misc;
-mod model;
 mod novi;
 mod object;
 mod plugins;

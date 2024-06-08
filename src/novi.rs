@@ -3,12 +3,7 @@ use chrono::Utc;
 use dashmap::DashMap;
 use deadpool::managed::Pool;
 use redis::AsyncCommands;
-use std::{
-    collections::{HashMap, HashSet},
-    ops::Deref,
-    str::FromStr,
-    sync::Arc,
-};
+use std::{collections::HashSet, ops::Deref, str::FromStr, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 use tokio_postgres::{types::Type, NoTls};
 use tracing::warn;
@@ -102,11 +97,19 @@ impl Inner {
         });
     }
 
-    pub async fn register_function(&self, name: String, function: Function, permission: Option<String>) -> Result<()> {
+    pub async fn register_function(
+        &self,
+        name: String,
+        function: Function,
+        permission: Option<String>,
+    ) -> Result<()> {
         use dashmap::mapref::entry::Entry;
         match self.functions.entry(name) {
             Entry::Vacant(entry) => {
-                entry.insert(FunctionRegistry { function, permission });
+                entry.insert(FunctionRegistry {
+                    function,
+                    permission,
+                });
             }
             Entry::Occupied(_) => {
                 bail!(@InvalidArgument "function already exists");
@@ -136,8 +139,6 @@ impl Novi {
 
             roles: HashSet::new(),
             perms: config.guest_permissions.iter().cloned().collect(),
-
-            tags: HashMap::new(),
         });
         let guest_identity = Arc::new(Identity::new_user(
             UserRef::new(guest_user.clone().into()),

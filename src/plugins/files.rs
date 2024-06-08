@@ -105,7 +105,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                 })
             })
         },
-        Some("file.download".to_owned()),
+        Some("file.store".to_owned()),
     )
     .await?;
 

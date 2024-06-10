@@ -511,6 +511,7 @@ impl proto::novi_server::Novi for RpcFacade {
         )>(32);
         let removed = Arc::new(AtomicBool::default());
         tokio::spawn({
+            let stream_tx = stream_tx.clone();
             let removed = removed.clone();
             async move {
                 let mut result_txs = Slab::new();
@@ -584,6 +585,17 @@ impl proto::novi_server::Novi for RpcFacade {
             )
             .await;
 
+        // Notify the client that the hook has been registered
+        let _ = stream_tx
+            .send(Ok(proto::RegCoreHookReply {
+                call_id: 0,
+                object: None,
+                old_object: None,
+                session: None,
+                identity: String::new(),
+            }))
+            .await;
+
         Ok(Response::new(ReceiverStream::new(stream_rx)))
     }
 
@@ -618,6 +630,7 @@ impl proto::novi_server::Novi for RpcFacade {
             mpsc::channel::<(proto::RegHookReply, oneshot::Sender<Result<HookAction>>)>(32);
         let removed = Arc::new(AtomicBool::default());
         tokio::spawn({
+            let stream_tx = stream_tx.clone();
             let removed = removed.clone();
             async move {
                 let mut result_txs = Slab::new();
@@ -688,6 +701,17 @@ impl proto::novi_server::Novi for RpcFacade {
             )
             .await;
 
+        // Notify the client that the hook has been registered
+        let _ = stream_tx
+            .send(Ok(proto::RegHookReply {
+                call_id: 0,
+                arguments: String::new(),
+                original_result: None,
+                session: String::new(),
+                identity: String::new(),
+            }))
+            .await;
+
         Ok(Response::new(ReceiverStream::new(stream_rx)))
     }
 
@@ -717,6 +741,7 @@ impl proto::novi_server::Novi for RpcFacade {
         let (call_tx, mut call_rx) =
             mpsc::channel::<(proto::RegFunctionReply, oneshot::Sender<Result<JsonMap>>)>(32);
         tokio::spawn({
+            let stream_tx = stream_tx.clone();
             let novi = self.0.novi.clone();
             let name = name.clone();
             async move {
@@ -789,6 +814,16 @@ impl proto::novi_server::Novi for RpcFacade {
                 init.permission,
             )
             .await?;
+
+        // Notify the client that the hook has been registered
+        let _ = stream_tx
+            .send(Ok(proto::RegFunctionReply {
+                call_id: 0,
+                arguments: String::new(),
+                session: String::new(),
+                identity: String::new(),
+            }))
+            .await;
 
         Ok(Response::new(ReceiverStream::new(stream_rx)))
     }

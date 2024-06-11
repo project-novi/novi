@@ -128,7 +128,7 @@ impl SessionStore {
             .await;
         if handle.is_some() {
             // release temporary session
-            let _ = sender.send(Command::End { commit: false }).await;
+            let _ = sender.send(Command::End { commit: true }).await;
         }
         drop(sender);
 

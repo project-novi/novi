@@ -21,7 +21,6 @@ async fn add_hook(novi: &Novi, point: HookPoint) -> Result<()> {
         "~@user*".parse()?,
         Box::new(|args: CoreHookArgs| {
             Box::pin(async move {
-                println!("{} user updating", args.object.id);
                 let new_user = User::try_from(args.object.clone())?;
                 new_user.validate()?;
                 if let Some(hash) = &new_user.password {

@@ -18,7 +18,10 @@ use crate::{
     identity::Identity,
     novi::Novi,
     object::Object,
-    proto::{query_request::Order, reg_core_hook_request::HookPoint, EventKind},
+    proto::{
+        new_session_request::SessionMode, query_request::Order, reg_core_hook_request::HookPoint,
+        EventKind,
+    },
     query::args_to_ref,
     rpc::{Command, SessionStore},
     subscribe::{DispatchWorkerCommand, Event, SubscribeCallback, SubscribeOptions, Subscriber},
@@ -40,10 +43,13 @@ pub enum AccessKind {
 pub struct Session {
     pub(crate) novi: Novi,
     token: SessionToken,
+
+    // This actually references `connection``, and should be dropped before it.
+    // So this MUST be placed before `connection`.
     txn: Option<Transaction<'static>>,
     pub identity: Arc<Identity>,
     pub(crate) connection: Box<PgConnection>,
-    lock: Option<bool>,
+    mode: SessionMode,
 
     // Keep track of currently running hooks to avoid reentrancy
     running_hooks: [bool; HOOK_POINT_COUNT],
@@ -56,18 +62,22 @@ impl Session {
     pub(crate) async fn transaction(
         novi: Novi,
         identity: Arc<Identity>,
-        lock: Option<bool>,
+        mode: SessionMode,
     ) -> Result<Self> {
         let mut connection = Box::new(novi.pg_pool.get().await?);
-        let txn = match lock {
-            Some(lock) => {
-                let txn = connection.transaction().await?;
-                if lock {
+        let txn = match mode {
+            SessionMode::Auto | SessionMode::ReadOnly | SessionMode::ReadWrite => {
+                let txn = connection
+                    .build_transaction()
+                    .read_only(mode == SessionMode::ReadOnly)
+                    .start()
+                    .await?;
+                if mode == SessionMode::ReadWrite {
                     txn.execute("lock object in exclusive mode", &[]).await?;
                 }
                 Some(txn)
             }
-            _ => None,
+            SessionMode::Immediate => None,
         };
         Ok(Self {
             novi,
@@ -75,7 +85,7 @@ impl Session {
             txn: unsafe { std::mem::transmute(txn) },
             identity,
             connection,
-            lock,
+            mode,
 
             running_hooks: Default::default(),
 
@@ -107,8 +117,8 @@ impl Session {
     }
 
     pub(crate) fn require_locked(&self) -> Result<()> {
-        if !matches!(self.lock, None | Some(true)) {
-            bail!(@InvalidArgument "session must be locked")
+        if self.mode == SessionMode::ReadOnly {
+            bail!(@InvalidArgument "session cannot be read only");
         }
         Ok(())
     }

@@ -16,7 +16,7 @@ use crate::{
     hook::{CoreHookCallback, HookAction, HookArgs, HookCallback, HOOK_POINT_COUNT},
     identity::Identity,
     plugins,
-    proto::reg_core_hook_request::HookPoint,
+    proto::{new_session_request::SessionMode, reg_core_hook_request::HookPoint},
     session::Session,
     subscribe::{DispatchWorkerCommand, Event},
     token::IdentityToken,
@@ -179,12 +179,12 @@ impl Novi {
         Ok(result)
     }
 
-    pub(crate) async fn guest_session(&self, lock: Option<bool>) -> Result<Session> {
-        Session::transaction(self.clone(), self.guest_identity.clone(), lock).await
+    pub(crate) async fn guest_session(&self, mode: SessionMode) -> Result<Session> {
+        Session::transaction(self.clone(), self.guest_identity.clone(), mode).await
     }
 
-    pub(crate) async fn internal_session(&self, lock: Option<bool>) -> Result<Session> {
-        Session::transaction(self.clone(), self.internal_identity.clone(), lock).await
+    pub(crate) async fn internal_session(&self, mode: SessionMode) -> Result<Session> {
+        Session::transaction(self.clone(), self.internal_identity.clone(), mode).await
     }
 
     pub async fn get_user(&self, id: Uuid) -> Result<UserRef> {
@@ -198,7 +198,7 @@ impl Novi {
         if let Some(user) = users.get(&id) {
             return Ok(UserRef::clone(user));
         }
-        let mut session = self.internal_session(None).await?;
+        let mut session = self.internal_session(SessionMode::Immediate).await?;
         let user = User::try_from(session.get_object_inner(id).await?)?;
         let user = Arc::new(ArcSwap::from_pointee(user));
 

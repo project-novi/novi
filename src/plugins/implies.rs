@@ -12,7 +12,7 @@ use crate::{
     misc::{now_utc, wrap_nom_from_str},
     novi::Novi,
     object::Object,
-    proto::reg_core_hook_request::HookPoint,
+    proto::{new_session_request::SessionMode, reg_core_hook_request::HookPoint},
     query::{args_to_ref, QueryBuilder},
     session::Session,
     tag::{TagDict, TagValue},
@@ -340,7 +340,7 @@ async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Resul
 }
 
 pub async fn init(novi: &Novi) -> Result<()> {
-    let mut session = novi.internal_session(None).await?;
+    let mut session = novi.internal_session(SessionMode::Auto).await?;
     let imply_objs = session
         .query(None, "@imply".parse()?, QueryOptions::default())
         .await?;

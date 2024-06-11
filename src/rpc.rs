@@ -23,7 +23,10 @@ use crate::{
     hook::{CoreHookArgs, HookAction, HookArgs, ObjectEdits},
     identity::{Identity, IDENTITIES},
     misc::{utc_from_timestamp, BoxFuture},
-    proto::{self, query_request::Order, required, tags_from_pb, EventKind},
+    proto::{
+        self, new_session_request::SessionMode, query_request::Order, required, tags_from_pb,
+        EventKind,
+    },
     session::Session,
     subscribe::SubscribeOptions,
     token::{IdentityToken, SessionToken},
@@ -63,8 +66,8 @@ pub(crate) struct SessionStoreInner {
 #[derive(Clone)]
 pub(crate) struct SessionStore(Arc<SessionStoreInner>);
 impl SessionStore {
-    pub async fn new_session(&self, lock: Option<bool>) -> Result<(SessionToken, JoinHandle<()>)> {
-        let mut session = self.novi.guest_session(lock).await?;
+    pub async fn new_session(&self, mode: SessionMode) -> Result<(SessionToken, JoinHandle<()>)> {
+        let mut session = self.novi.guest_session(mode).await?;
         let (tx, mut rx) = mpsc::channel::<Command>(8);
         let token = session.token().clone();
         self.senders.insert(token.clone(), tx);
@@ -105,7 +108,7 @@ impl SessionStore {
             None => {
                 // run in a temporary new session
                 // TODO: Is it possible that the this break the consistency?
-                let (token, handle) = self.new_session(None).await?;
+                let (token, handle) = self.new_session(SessionMode::Auto).await?;
                 (token, Some(handle))
             }
         };
@@ -222,7 +225,13 @@ impl proto::novi_server::Novi for RpcFacade {
         let req = req.into_inner();
         info!("new session");
 
-        let (token, _) = self.0.new_session(req.lock).await?;
+        let (token, _) = self
+            .0
+            .new_session(
+                SessionMode::try_from(req.mode)
+                    .map_err(|_| anyhow!(@InvalidArgument "invalid session mode"))?,
+            )
+            .await?;
 
         let (tx, rx) = mpsc::channel::<Result<proto::NewSessionReply, Status>>(1);
         tx.send(Ok(proto::NewSessionReply {

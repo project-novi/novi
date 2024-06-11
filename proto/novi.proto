@@ -77,7 +77,16 @@ message LoginAsReply { string identity = 1; }
 message UseMasterKeyRequest { string key = 1; }
 message UseMasterKeyReply { string identity = 1; }
 
-message NewSessionRequest { optional bool lock = 1; }
+message NewSessionRequest {
+  enum SessionMode {
+    AUTO = 0;
+    READ_ONLY = 1;
+    READ_WRITE = 2;
+    IMMEDIATE = 3;
+  }
+
+  SessionMode mode = 1;
+}
 message NewSessionReply { string token = 1; }
 
 message EndSessionRequest { bool commit = 1; }

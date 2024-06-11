@@ -235,6 +235,8 @@ impl Novi {
     }
 
     pub async fn login(&self, name: &str, password: &str) -> Result<Arc<Identity>> {
+        User::validate_password(password)?;
+        
         let connection = self.pg_pool.get().await?;
         let sql = "select id from object where tags->'@user.name'->>'v' = $1";
         let sql = connection.prepare_typed_cached(sql, &[Type::TEXT]).await?;

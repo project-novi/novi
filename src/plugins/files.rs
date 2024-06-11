@@ -68,6 +68,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     };
 
                     let object = session.get_object(Some(store.clone()), id).await?;
+                    dbg!(variant, &object.tags);
                     if object.get_file(variant).is_ok()
                         && !args.get_bool("overwrite").unwrap_or(false)
                     {

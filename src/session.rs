@@ -101,12 +101,15 @@ impl Session {
         if let Some(txn) = self.txn {
             let result = if commit {
                 let novi = self.novi.clone();
-                tokio::spawn(async move {
-                    for event in self.pending_events {
-                        novi.dispatch_event(event).await;
-                    }
-                });
-                txn.commit().await
+                let result = txn.commit().await;
+                if result.is_ok() {
+                    tokio::spawn(async move {
+                        for event in self.pending_events {
+                            novi.dispatch_event(event).await;
+                        }
+                    });
+                }
+                result
             } else {
                 txn.rollback().await
             };

@@ -229,7 +229,7 @@ message RegHookReply {
 message RegFunctionRequest {
   message Initiate {
     string name = 1;
-    optional string permission = 2;
+    bool hookable = 2;
   }
   message CallResult {
     uint64 call_id = 1;

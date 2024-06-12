@@ -679,9 +679,6 @@ impl Session {
         let Some(reg) = novi.functions.get(name) else {
             bail!(@FunctionNotFound "function not found")
         };
-        if let Some(permission) = &reg.permission {
-            self.identity.check_perm(permission)?;
-        }
 
         (reg.function)((self, &store), arguments).await
     }

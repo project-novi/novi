@@ -2,9 +2,7 @@ use std::{iter, path::PathBuf, str::FromStr, sync::Arc};
 use url::Url;
 use uuid::Uuid;
 
-use crate::{
-    anyhow, bail, function::JsonMap, ipfs::StorageContent, novi::Novi, Result
-};
+use crate::{anyhow, bail, function::JsonMap, ipfs::StorageContent, novi::Novi, Result};
 
 pub async fn init(novi: &Novi) -> Result<()> {
     novi.register_function(
@@ -47,12 +45,12 @@ pub async fn init(novi: &Novi) -> Result<()> {
                 Ok(iter::once(("url".to_owned(), url)).collect())
             })
         }),
-        None,
+        true,
     )
     .await?;
 
     novi.register_function(
-        "file.store".to_owned(),
+        "file.store.impl".to_owned(),
         {
             let novi = novi.clone();
             Arc::new(move |(session, store), args: &JsonMap| {
@@ -87,12 +85,9 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     } else {
                         bail!(@InvalidArgument "missing URL or path")
                     };
-                    let url = client
-                        .put(
-                            content,
-                            filename,
-                        )
-                        .await?;
+                    let url = client.put(content, filename).await?;
+
+                    // use internal session to store file tag
                     let old_identity = session.replace_internal();
                     let result = session
                         .update_object(
@@ -109,7 +104,24 @@ pub async fn init(novi: &Novi) -> Result<()> {
                 })
             })
         },
-        Some("file.store".to_owned()),
+        true,
+    )
+    .await?;
+    novi.register_function(
+        "file.store".to_owned(),
+        Arc::new(move |(session, store), args: &JsonMap| {
+            let store = store.clone();
+            Box::pin(async move {
+                let variant = args.get_str("variant").unwrap_or("original");
+                session
+                    .identity
+                    .check_perm(&format!("file.store:{variant}"))?;
+                session
+                    .call_function(store, "file.store", args)
+                    .await
+            })
+        }),
+        false,
     )
     .await?;
 

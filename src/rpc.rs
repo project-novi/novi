@@ -708,7 +708,7 @@ impl proto::novi_server::Novi for RpcFacade {
                     Box::pin(session.yield_self(store.clone(), fut))
                 }),
             )
-            .await;
+            .await?;
 
         // Notify the client that the hook has been registered
         let _ = stream_tx
@@ -820,7 +820,7 @@ impl proto::novi_server::Novi for RpcFacade {
                         }))
                     },
                 ),
-                init.permission,
+                init.hookable,
             )
             .await?;
 

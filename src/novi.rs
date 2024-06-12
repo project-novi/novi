@@ -26,7 +26,7 @@ use crate::{
 
 pub(crate) struct FunctionRegistry {
     pub function: Function,
-    pub permission: Option<String>,
+    pub hookable: bool,
 }
 
 pub struct Inner {
@@ -46,8 +46,13 @@ impl Inner {
         self.core_hooks.write().await[point as usize].push((filter, f));
     }
 
-    pub async fn register_hook(&self, function: &str, before: bool, f: HookCallback) {
+    pub async fn register_hook(&self, function: &str, before: bool, f: HookCallback) -> Result<()> {
+        let mut failed = false;
         self.functions.alter(function, |_, reg| {
+            if !reg.hookable {
+                failed = true;
+                return reg;
+            }
             let orig_f = reg.function;
             FunctionRegistry {
                 function: if before {
@@ -92,24 +97,27 @@ impl Inner {
                         })
                     })
                 },
-                permission: reg.permission,
+                hookable: true,
             }
         });
+
+        if failed {
+            bail!(@PermissionDenied "Function is not hookable. Try hooking `func.impl` instead");
+        }
+
+        Ok(())
     }
 
     pub async fn register_function(
         &self,
         name: String,
         function: Function,
-        permission: Option<String>,
+        hookable: bool,
     ) -> Result<()> {
         use dashmap::mapref::entry::Entry;
         match self.functions.entry(name) {
             Entry::Vacant(entry) => {
-                entry.insert(FunctionRegistry {
-                    function,
-                    permission,
-                });
+                entry.insert(FunctionRegistry { function, hookable });
             }
             Entry::Occupied(_) => {
                 bail!(@InvalidArgument "function already exists");
@@ -236,7 +244,7 @@ impl Novi {
 
     pub async fn login(&self, name: &str, password: &str) -> Result<Arc<Identity>> {
         User::validate_password(password)?;
-        
+
         let connection = self.pg_pool.get().await?;
         let sql = "select id from object where tags->'@user.name'->>'v' = $1";
         let sql = connection.prepare_typed_cached(sql, &[Type::TEXT]).await?;

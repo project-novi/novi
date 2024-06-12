@@ -856,20 +856,14 @@ impl proto::novi_server::Novi for RpcFacade {
             .await
     }
 
-    async fn check_permission(
+    async fn has_permission(
         &self,
-        req: Request<proto::CheckPermissionRequest>,
-    ) -> RpcResult<proto::CheckPermissionReply> {
+        req: Request<proto::HasPermissionRequest>,
+    ) -> RpcResult<proto::HasPermissionReply> {
         let (_, ext, req) = req.into_parts();
         let identity = self.0.extract_identity(&ext).await?;
-        let ok = if req.bail {
-            for perm in req.permissions {
-                identity.check_perm(&perm)?;
-            }
-            true
-        } else {
-            req.permissions.iter().all(|perm| identity.has_perm(perm))
-        };
-        Ok(Response::new(proto::CheckPermissionReply { ok }))
+        Ok(Response::new(proto::HasPermissionReply {
+            ok: req.permissions.iter().all(|perm| identity.has_perm(perm)),
+        }))
     }
 }

@@ -36,13 +36,16 @@ message Object {
 message Scopes { repeated string scopes = 1; }
 
 service Novi {
+  // credentials
   rpc Login(LoginRequest) returns (LoginReply);
   rpc LoginAs(LoginAsRequest) returns (LoginAsReply);
   rpc UseMasterKey(UseMasterKeyRequest) returns (UseMasterKeyReply);
 
+  // session management
   rpc NewSession(NewSessionRequest) returns (stream NewSessionReply);
   rpc EndSession(EndSessionRequest) returns (EndSessionReply);
 
+  // object operations
   rpc CreateObject(CreateObjectRequest) returns (CreateObjectReply);
   rpc GetObject(GetObjectRequest) returns (GetObjectReply);
   rpc UpdateObject(UpdateObjectRequest) returns (UpdateObjectReply);
@@ -50,6 +53,7 @@ service Novi {
   rpc DeleteObjectTags(DeleteObjectTagsRequest) returns (DeleteObjectTagsReply);
   rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectReply);
 
+  // advanced operations
   rpc Query(QueryRequest) returns (QueryReply);
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeReply);
   rpc RegisterCoreHook(stream RegCoreHookRequest)
@@ -59,7 +63,8 @@ service Novi {
       returns (stream RegFunctionReply);
   rpc CallFunction(CallFunctionRequest) returns (CallFunctionReply);
 
-  rpc CheckPermission(CheckPermissionRequest) returns (CheckPermissionReply);
+  // identity related
+  rpc HasPermission(HasPermissionRequest) returns (HasPermissionReply);
 }
 
 message LoginRequest {
@@ -256,8 +261,5 @@ message CallFunctionRequest {
 }
 message CallFunctionReply { string result = 1; }
 
-message CheckPermissionRequest {
-  repeated string permissions = 1;
-  bool bail = 2;
-}
-message CheckPermissionReply { bool ok = 1; }
+message HasPermissionRequest { repeated string permissions = 1; }
+message HasPermissionReply { bool ok = 1; }

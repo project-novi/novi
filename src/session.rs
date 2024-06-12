@@ -119,9 +119,9 @@ impl Session {
         }
     }
 
-    pub(crate) fn require_locked(&self) -> Result<()> {
+    pub(crate) fn require_mutable(&self) -> Result<()> {
         if self.mode == SessionMode::ReadOnly {
-            bail!(@InvalidArgument "session cannot be read only");
+            bail!(@InvalidArgument "performing mutation in read-only session");
         }
         Ok(())
     }
@@ -399,7 +399,7 @@ impl Session {
         store: Option<SessionStore>,
         tags: Tags,
     ) -> Result<Object> {
-        self.require_locked()?;
+        self.require_mutable()?;
         self.identity.check_perm("object.create")?;
         self.validate_tags(&tags)?;
 
@@ -479,7 +479,7 @@ impl Session {
         tags: Tags,
         force: bool,
     ) -> Result<Object> {
-        self.require_locked()?;
+        self.require_mutable()?;
         self.identity.check_perm("object.edit")?;
         self.validate_tags(&tags)?;
 
@@ -506,7 +506,7 @@ impl Session {
         scopes: Option<HashSet<String>>,
         force: bool,
     ) -> Result<Object> {
-        self.require_locked()?;
+        self.require_mutable()?;
         self.identity.check_perm("object.edit")?;
         self.validate_tags(&tags)?;
 
@@ -531,7 +531,7 @@ impl Session {
         id: Uuid,
         tags: Vec<String>,
     ) -> Result<Object> {
-        self.require_locked()?;
+        self.require_mutable()?;
         self.identity.check_perm("object.edit")?;
         for tag in &tags {
             validate_tag_name(tag)?;
@@ -555,7 +555,7 @@ impl Session {
     }
 
     pub async fn delete_object(&mut self, store: Option<SessionStore>, id: Uuid) -> Result<()> {
-        self.require_locked()?;
+        self.require_mutable()?;
         self.identity.check_perm("object.delete")?;
 
         debug!(%id, "delete object");

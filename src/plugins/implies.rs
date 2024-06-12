@@ -229,7 +229,7 @@ impl Implies {
         imply.build_sql_to_find_unsatified(&session.novi, &mut q);
 
         let (sql, args, types) = q.build();
-        session.require_locked()?;
+        session.require_mutable()?;
 
         let mut unsatisfied = Vec::new();
         let stmt = session.connection.prepare_typed(&sql, &types).await?;

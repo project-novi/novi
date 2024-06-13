@@ -9,7 +9,6 @@ pub async fn init(novi: &Novi) -> Result<()> {
         "file.url".to_owned(),
         Arc::new(move |(session, store), args: &JsonMap| {
             Box::pin(async move {
-                dbg!(args);
                 let depth_limit = args.get_u64("depth_limit").unwrap_or(5);
                 let id = args.get_id("id")?;
                 let variant = args.get_str("variant").unwrap_or("original");

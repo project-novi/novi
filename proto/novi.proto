@@ -35,6 +35,13 @@ message Object {
 
 message Scopes { repeated string scopes = 1; }
 
+enum SessionMode {
+  AUTO = 0;
+  READ_ONLY = 1;
+  READ_WRITE = 2;
+  IMMEDIATE = 3;
+}
+
 service Novi {
   // credentials
   rpc Login(LoginRequest) returns (LoginReply);
@@ -83,13 +90,6 @@ message UseMasterKeyRequest { string key = 1; }
 message UseMasterKeyReply { string identity = 1; }
 
 message NewSessionRequest {
-  enum SessionMode {
-    AUTO = 0;
-    READ_ONLY = 1;
-    READ_WRITE = 2;
-    IMMEDIATE = 3;
-  }
-
   SessionMode mode = 1;
 }
 message NewSessionReply { string token = 1; }
@@ -100,7 +100,10 @@ message EndSessionReply {}
 message CreateObjectRequest { Tags tags = 1; }
 message CreateObjectReply { Object object = 1; }
 
-message GetObjectRequest { UUID id = 1; }
+message GetObjectRequest {
+  UUID id = 1;
+  bool lock = 2;
+}
 message GetObjectReply { Object object = 1; }
 
 message UpdateObjectRequest {
@@ -136,6 +139,7 @@ message QueryRequest {
   optional int64 created_before = 6;
   Order order = 7;
   optional uint32 limit = 8;
+  bool lock = 9;
 
   enum Order {
     CREATED_DESC = 0;
@@ -155,10 +159,14 @@ message SubscribeRequest {
   string filter = 1;
   optional int64 checkpoint = 2;
   repeated EventKind accept_kinds = 3;
+  optional SessionMode session = 4;
+  bool latest = 5;
+  bool recheck = 6;
 }
 message SubscribeReply {
   Object object = 1;
   EventKind kind = 2;
+  optional string session = 3;
 }
 
 message ObjectEdits {

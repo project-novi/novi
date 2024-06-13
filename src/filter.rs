@@ -434,6 +434,7 @@ pub struct QueryOptions {
     pub updated_range: TimeRange,
     pub order: Order,
     pub limit: Option<u32>,
+    pub lock: bool,
 }
 impl Default for QueryOptions {
     fn default() -> Self {
@@ -443,6 +444,7 @@ impl Default for QueryOptions {
             updated_range: TimeRange::default(),
             order: Order::CreatedDesc,
             limit: None,
+            lock: true,
         }
     }
 }
@@ -456,12 +458,15 @@ impl Filter {
         let mut q = QueryBuilder::new("object");
         self.build_sql(&mut q, identity, options.checkpoint);
 
-        q.order(match options.order {
-            Order::CreatedDesc => "created desc",
-            Order::CreatedAsc => "created asc",
-            Order::UpdatedDesc => "updated desc",
-            Order::UpdatedAsc => "updated asc",
-        });
+        q.order = Some(
+            match options.order {
+                Order::CreatedDesc => "created desc",
+                Order::CreatedAsc => "created asc",
+                Order::UpdatedDesc => "updated desc",
+                Order::UpdatedAsc => "updated asc",
+            }
+            .into(),
+        );
         let mut add_range = |field: &str, range: TimeRange| {
             if let Some(lower) = range.0 {
                 let clause = format!("{field} >= {}", q.bind(lower, Type::TIMESTAMPTZ));
@@ -475,9 +480,8 @@ impl Filter {
         add_range("created", options.created_range);
         add_range("updated", options.updated_range);
 
-        if let Some(limit) = options.limit {
-            q.limit(limit);
-        }
+        q.limit = options.limit;
+        q.lock = options.lock;
 
         q.build()
     }

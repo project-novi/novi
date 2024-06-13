@@ -7,7 +7,7 @@ use crate::{anyhow, bail, function::JsonMap, ipfs::StorageContent, novi::Novi, R
 pub async fn init(novi: &Novi) -> Result<()> {
     novi.register_function(
         "file.url".to_owned(),
-        Arc::new(move |(session, store), args: &JsonMap| {
+        Arc::new(move |session, args: &JsonMap| {
             Box::pin(async move {
                 let depth_limit = args.get_u64("depth_limit").unwrap_or(5);
                 let id = args.get_id("id")?;
@@ -24,7 +24,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     .collect())
                 };
 
-                let object = session.get_object(Some(store.clone()), id).await?;
+                let object = session.get_object(id, false).await?;
                 let Ok(Some(url_str)) = object.get_file(variant) else {
                     if allow_invalid {
                         return to_result(None);
@@ -52,9 +52,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     ]
                     .into_iter()
                     .collect();
-                    session
-                        .call_function(store.clone(), "file.url", &args)
-                        .await
+                    session.call_function("file.url", &args).await
                 } else {
                     to_result(Some(url_str.to_owned()))
                 }
@@ -68,7 +66,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
         "file.store.impl".to_owned(),
         {
             let novi = novi.clone();
-            Arc::new(move |(session, store), args: &JsonMap| {
+            Arc::new(move |session, args: &JsonMap| {
                 let novi = novi.clone();
                 Box::pin(async move {
                     let id = args.get_id("id")?;
@@ -80,7 +78,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                         bail!(@InvalidArgument "invalid storage")
                     };
 
-                    let object = session.get_object(Some(store.clone()), id).await?;
+                    let object = session.get_object(id, true).await?;
                     if object.get_file(variant).is_ok()
                         && !args.get_bool("overwrite").unwrap_or(false)
                     {
@@ -105,7 +103,6 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     let old_identity = session.replace_internal();
                     let result = session
                         .update_object(
-                            Some(store.clone()),
                             id,
                             iter::once((format!("@file:{variant}"), Some(url))).collect(),
                             false,
@@ -123,15 +120,13 @@ pub async fn init(novi: &Novi) -> Result<()> {
     .await?;
     novi.register_function(
         "file.store".to_owned(),
-        Arc::new(move |(session, store), args: &JsonMap| {
+        Arc::new(move |session, args: &JsonMap| {
             Box::pin(async move {
                 let variant = args.get_str("variant").unwrap_or("original");
                 session
                     .identity
                     .check_perm(&format!("file.store:{variant}"))?;
-                session
-                    .call_function(store.clone(), "file.store.impl", args)
-                    .await
+                session.call_function("file.store.impl", args).await
             })
         }),
         false,

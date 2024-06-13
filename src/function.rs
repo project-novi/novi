@@ -1,4 +1,4 @@
-use crate::{anyhow, bail, misc::BoxFuture, rpc::SessionStore, session::Session, Result};
+use crate::{anyhow, bail, misc::BoxFuture, session::Session, Result};
 use serde_json::Map;
 use std::{fmt, str::FromStr, sync::Arc};
 use uuid::Uuid;
@@ -54,7 +54,7 @@ impl FromIterator<(String, serde_json::Value)> for JsonMap {
 
 pub type Function = Arc<
     dyn for<'a> Fn(
-            (&'a mut Session, &'a SessionStore),
+            &'a mut Session,
             &'a JsonMap,
         ) -> BoxFuture<'a, Result<JsonMap>>
         + Send

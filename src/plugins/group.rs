@@ -13,12 +13,11 @@ pub async fn init(novi: &Novi) -> Result<()> {
         HookPoint::AfterDelete,
         "@group".parse()?,
         Box::new(move |args: CoreHookArgs| {
-            let (session, _) = args.session.ok().unwrap();
+            let session = args.session.ok().unwrap();
             Box::pin(async move {
                 debug!(id = %args.object.id, "cascade delete objects");
                 let children = session
                     .query(
-                        None,
                         Filter::Atom {
                             tag: "@parent".to_owned(),
                             kind: FilterKind::Equals(args.object.id.to_string(), true),
@@ -28,7 +27,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     )
                     .await?;
                 for object in children {
-                    session.delete_object(None, object.id).await?;
+                    session.delete_object(object.id).await?;
                 }
 
                 Ok(ObjectEdits::default())

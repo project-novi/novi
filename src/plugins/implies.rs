@@ -12,7 +12,7 @@ use crate::{
     misc::{now_utc, wrap_nom_from_str},
     novi::Novi,
     object::Object,
-    proto::{new_session_request::SessionMode, reg_core_hook_request::HookPoint},
+    proto::{reg_core_hook_request::HookPoint, SessionMode},
     query::{args_to_ref, QueryBuilder},
     session::Session,
     tag::{TagDict, TagValue},
@@ -258,7 +258,7 @@ async fn add_imply_hook(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()
         Box::new(move |args: CoreHookArgs| {
             let implies = implies.clone();
             let identity = args.identity().clone();
-            let (session, _) = args.session.ok().unwrap();
+            let session = args.session.ok().unwrap();
             Box::pin(async move {
                 identity.check_perm("imply.create")?;
                 let imply = Imply::from_object(args.object)?;
@@ -279,7 +279,7 @@ async fn add_imply_hook(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Result<()
         Box::new(move |args: CoreHookArgs| {
             let implies = implies.clone();
             let identity = args.identity().clone();
-            let (session, _) = args.session.ok().unwrap();
+            let session = args.session.ok().unwrap();
             Box::pin(async move {
                 identity.check_perm("imply.edit")?;
                 let imply = Imply::from_object(args.object)?;
@@ -319,7 +319,7 @@ async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Resul
         "imply.apply.impl".to_owned(),
         {
             let implies = implies.clone();
-            Arc::new(move |(session, _), args: &JsonMap| {
+            Arc::new(move |session, args: &JsonMap| {
                 let implies = implies.clone();
                 Box::pin(async move {
                     session.identity.check_perm("imply.apply")?;
@@ -340,10 +340,10 @@ async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Resul
     novi.register_function(
         "imply.apply".to_owned(),
         {
-            Arc::new(move |(session, store), args: &JsonMap| {
+            Arc::new(move |session, args: &JsonMap| {
                 Box::pin(async move {
                     session.identity.check_perm("imply.apply")?;
-                    session.call_function(store.clone(), "imply.apply.impl", args).await
+                    session.call_function("imply.apply.impl", args).await
                 })
             })
         },
@@ -357,7 +357,7 @@ async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Resul
 pub async fn init(novi: &Novi) -> Result<()> {
     let mut session = novi.internal_session(SessionMode::Auto).await?;
     let imply_objs = session
-        .query(None, "@imply".parse()?, QueryOptions::default())
+        .query("@imply".parse()?, QueryOptions::default())
         .await?;
     let mut implies = HashMap::new();
     for object in imply_objs {

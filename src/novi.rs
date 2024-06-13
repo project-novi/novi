@@ -4,22 +4,27 @@ use dashmap::DashMap;
 use deadpool::managed::Pool;
 use redis::AsyncCommands;
 use std::{collections::HashSet, ops::Deref, str::FromStr, sync::Arc};
-use tokio::sync::{mpsc, RwLock};
+use tokio::{
+    sync::{mpsc, oneshot, RwLock},
+    task::JoinHandle,
+};
 use tokio_postgres::{types::Type, NoTls};
 use tracing::warn;
 use uuid::Uuid;
 
 use crate::{
-    bail,
+    anyhow, bail,
     filter::Filter,
     function::Function,
     hook::{CoreHookCallback, HookAction, HookArgs, HookCallback, HOOK_POINT_COUNT},
     identity::Identity,
+    misc::BoxFuture,
     plugins,
-    proto::{new_session_request::SessionMode, reg_core_hook_request::HookPoint},
-    session::Session,
+    proto::{reg_core_hook_request::HookPoint, SessionMode},
+    rpc::RpcResult,
+    session::{Session, SessionCommand, SessionStore},
     subscribe::{DispatchWorkerCommand, Event},
-    token::IdentityToken,
+    token::{IdentityToken, SessionToken},
     user::{User, UserRef, INTERNAL_USER},
     Config, Result,
 };
@@ -31,6 +36,7 @@ pub(crate) struct FunctionRegistry {
 
 pub struct Inner {
     pub config: Config,
+    pub session_store: SessionStore,
     pub core_hooks: RwLock<[Vec<(Filter, CoreHookCallback)>; HOOK_POINT_COUNT]>,
     pub functions: DashMap<String, FunctionRegistry>,
     pub dispatch_tx: mpsc::Sender<DispatchWorkerCommand>,
@@ -58,35 +64,35 @@ impl Inner {
             let orig_f = reg.function;
             FunctionRegistry {
                 function: if before {
-                    Arc::new(move |(session, store), args| {
+                    Arc::new(move |session, args| {
                         let orig_f = Arc::clone(&orig_f);
                         let f = Arc::clone(&f);
                         Box::pin(async move {
                             let action = f(HookArgs {
                                 arguments: args,
                                 original_result: None,
-                                session: (session, store),
+                                session: session,
                             })
                             .await?;
                             match action {
-                                HookAction::None => orig_f((session, store), args).await,
+                                HookAction::None => orig_f(session, args).await,
                                 HookAction::UpdateResult(result) => Ok(result),
                                 HookAction::UpdateArgs(new_args) => {
-                                    orig_f((session, store), &new_args).await
+                                    orig_f(session, &new_args).await
                                 }
                             }
                         })
                     })
                 } else {
-                    Arc::new(move |(session, store), args| {
+                    Arc::new(move |session, args| {
                         let orig_f = Arc::clone(&orig_f);
                         let f = Arc::clone(&f);
                         Box::pin(async move {
-                            let result = orig_f((session, store), args).await?;
+                            let result = orig_f(session, args).await?;
                             let action = f(HookArgs {
                                 arguments: args,
                                 original_result: Some(&result),
-                                session: (session, store),
+                                session: session,
                             })
                             .await?;
                             match action {
@@ -167,6 +173,7 @@ impl Novi {
         let (dispatch_tx, dispatch_rx) = mpsc::channel(1024);
         let inner = Arc::new(Inner {
             config,
+            session_store: SessionStore::default(),
             core_hooks: Default::default(),
             functions: DashMap::new(),
             dispatch_tx,
@@ -192,12 +199,89 @@ impl Novi {
         Ok(result)
     }
 
+    pub async fn extract_identity(&self, ext: &tonic::Extensions) -> Result<Arc<Identity>> {
+        match ext.get::<IdentityToken>() {
+            Some(identity) => self.identity_from_token(identity).await,
+            None => Ok(self.guest_identity.clone()),
+        }
+    }
+
+    pub(crate) async fn submit<R: Send + 'static>(
+        &self,
+        mut ext: tonic::Extensions,
+        action: impl for<'a> FnOnce(&'a mut Session) -> BoxFuture<'a, Result<R>> + Send + 'static,
+    ) -> RpcResult<R> {
+        let identity = self.extract_identity(&ext).await?;
+        let (token, handle) = match ext.remove::<SessionToken>() {
+            Some(token) => (token, None),
+            None => {
+                // run in a temporary new session
+                // TODO: Is it possible that the this break the consistency?
+                let (token, handle) = self.new_session(SessionMode::Auto).await?;
+                (token, Some(handle))
+            }
+        };
+        let (tx, rx) = oneshot::channel();
+        let Some(sender) = self.session_store.get(&token) else {
+            bail!(@InvalidCredentials "invalid session");
+        };
+        let result = sender
+            .send(SessionCommand::Action(Box::new(move |session| {
+                session.identity = identity;
+                let fut = action(session);
+                Box::pin(async move {
+                    let _ = tx.send(fut.await);
+                })
+            })))
+            .await;
+        if handle.is_some() {
+            // release temporary session
+            let _ = sender.send(SessionCommand::End { commit: true }).await;
+        }
+        drop(sender);
+
+        if result.is_err() {
+            bail!(@IOError "failed to submit");
+        }
+        let result = match rx.await {
+            Ok(result) => tonic::Response::new(result?),
+            Err(_) => bail!(@IOError "session closed"),
+        };
+
+        if let Some(handle) = handle {
+            // wait for the temporary session to terminate
+            let _ = handle.await;
+        }
+        Ok(result)
+    }
+
     pub(crate) async fn guest_session(&self, mode: SessionMode) -> Result<Session> {
         Session::transaction(self.clone(), self.guest_identity.clone(), mode).await
     }
 
     pub(crate) async fn internal_session(&self, mode: SessionMode) -> Result<Session> {
         Session::transaction(self.clone(), self.internal_identity.clone(), mode).await
+    }
+
+    pub async fn new_session(&self, mode: SessionMode) -> Result<(SessionToken, JoinHandle<()>)> {
+        let mut session = self.guest_session(mode).await?;
+        let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
+        let token = session.token().clone();
+        self.session_store.insert(token.clone(), tx);
+        let handle = tokio::spawn(async move {
+            while let Some(action) = rx.recv().await {
+                match action {
+                    SessionCommand::Action(action) => action(&mut session).await,
+                    SessionCommand::End { commit } => {
+                        if let Err(err) = session.end(commit).await {
+                            warn!(?err, "failed to end session");
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+        Ok((token, handle))
     }
 
     pub async fn get_user(&self, id: Uuid) -> Result<UserRef> {
@@ -212,7 +296,7 @@ impl Novi {
             return Ok(UserRef::clone(user));
         }
         let mut session = self.internal_session(SessionMode::Immediate).await?;
-        let user = User::try_from(session.get_object_inner(id).await?)?;
+        let user = User::try_from(session.get_object_inner(id, true).await?)?;
         let user = Arc::new(ArcSwap::from_pointee(user));
 
         users.insert(id, user.clone());

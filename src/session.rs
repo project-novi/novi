@@ -1,3 +1,4 @@
+use dashmap::DashMap;
 use deadpool_postgres::Transaction;
 use std::{
     collections::{BTreeSet, HashSet},
@@ -16,19 +17,27 @@ use crate::{
     function::JsonMap,
     hook::{CoreHookArgs, HOOK_POINT_COUNT},
     identity::Identity,
+    misc::BoxFuture,
     novi::Novi,
     object::Object,
-    proto::{
-        new_session_request::SessionMode, query_request::Order, reg_core_hook_request::HookPoint,
-        EventKind,
-    },
+    proto::{query_request::Order, reg_core_hook_request::HookPoint, EventKind, SessionMode},
     query::args_to_ref,
-    rpc::{Command, SessionStore},
-    subscribe::{DispatchWorkerCommand, Event, SubscribeCallback, SubscribeOptions, Subscriber},
+    subscribe::{
+        DispatchWorkerCommand, Event, SubscribeArgs, SubscribeCallback, SubscribeOptions,
+        Subscriber,
+    },
     tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags},
     token::SessionToken,
     Result,
 };
+
+pub type SessionAction = Box<dyn for<'a> FnOnce(&'a mut Session) -> BoxFuture<'a, ()> + Send>;
+
+pub(crate) enum SessionCommand {
+    Action(SessionAction),
+    End { commit: bool },
+}
+pub type SessionStore = DashMap<SessionToken, mpsc::Sender<SessionCommand>>;
 
 type PgConnection = deadpool::managed::Object<deadpool_postgres::Manager>;
 
@@ -126,26 +135,26 @@ impl Session {
         Ok(())
     }
 
-    /// Puts self into the SessionStore, allowing the future to re-enter this
+    /// Puts self into the session_store, allowing the future to re-enter this
     /// session.
     pub(crate) async fn yield_self<'a, R: Send + 'static>(
         &'a mut self,
-        store: SessionStore,
         fut: impl Future<Output = Result<R>> + Send + 'a,
     ) -> Result<R> {
-        let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(1);
+        let novi = self.novi.clone();
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<SessionCommand>(1);
         let (result_tx, result_rx) = oneshot::channel();
-        let old = store.senders.insert(self.token.clone(), cmd_tx);
+        let old = novi.session_store.insert(self.token.clone(), cmd_tx);
         let fut = {
-            let store = store.clone();
+            let novi = novi.clone();
             let token = self.token.clone();
             async move {
                 let result = fut.await;
-                let Some(sender) = store.senders.get(&token) else {
+                let Some(sender) = novi.session_store.get(&token) else {
                     warn!("session closed unexpectedly");
                     return;
                 };
-                let Ok(_) = sender.send(Command::End { commit: false }).await else {
+                let Ok(_) = sender.send(SessionCommand::End { commit: false }).await else {
                     warn!("session closed unexpectedly");
                     return;
                 };
@@ -160,17 +169,17 @@ impl Session {
                 _ = &mut fut => break,
                 Some(cmd) = cmd_rx.recv() => {
                     match cmd {
-                        Command::Action(action) => action(self).await,
-                        Command::End { .. } => break,
+                        SessionCommand::Action(action) => action(self).await,
+                        SessionCommand::End { .. } => break,
                     }
                 },
             }
         }
 
         if let Some(old) = old {
-            store.senders.insert(self.token.clone(), old);
+            novi.session_store.insert(self.token.clone(), old);
         } else {
-            store.senders.remove(&self.token);
+            novi.session_store.remove(&self.token);
         }
         match result_rx.await {
             Ok(result) => result,
@@ -180,7 +189,6 @@ impl Session {
 
     async fn run_hook_inner(
         &mut self,
-        store: SessionStore,
         point: HookPoint,
         freeze: bool,
         object: &mut Object,
@@ -197,7 +205,7 @@ impl Session {
             let edits = f(CoreHookArgs {
                 object,
                 old_object,
-                session: Ok((self, &store)),
+                session: Ok(self),
             })
             .await?;
             if freeze {
@@ -213,7 +221,6 @@ impl Session {
 
     async fn run_hook(
         &mut self,
-        store: Option<SessionStore>,
         point: HookPoint,
         freeze: bool,
         object: &mut Object,
@@ -225,33 +232,28 @@ impl Session {
             return Ok(());
         }
         self.running_hooks[point as usize] = true;
-        // If no SessionStore is provided, hooks are disabled
-        let Some(store) = store else {
-            return Ok(());
-        };
 
         let result = self
-            .run_hook_inner(store, point, freeze, object, old_object, deleted_tags)
+            .run_hook_inner(point, freeze, object, old_object, deleted_tags)
             .await;
 
         self.running_hooks[point as usize] = false;
         result
     }
 
-    async fn return_object(
-        &mut self,
-        store: Option<SessionStore>,
-        mut object: Object,
-    ) -> Result<Object> {
+    pub(crate) async fn run_before_view(&mut self, object: &mut Object) -> Result<()> {
         self.run_hook(
-            store,
             HookPoint::BeforeView,
             false,
-            &mut object,
+            object,
             None,
             &Default::default(),
         )
-        .await?;
+        .await
+    }
+
+    async fn return_object(&mut self, mut object: Object) -> Result<Object> {
+        self.run_before_view(&mut object).await?;
         Ok(object)
     }
 
@@ -298,13 +300,11 @@ impl Session {
 
     async fn submit_change(
         &mut self,
-        store: Option<SessionStore>,
         object: &mut Object,
         old_object: Object,
         deleted_tags: BTreeSet<String>,
     ) -> Result<()> {
         self.run_hook(
-            store.clone(),
             HookPoint::BeforeUpdate,
             false,
             object,
@@ -316,7 +316,6 @@ impl Session {
         self.save_object(object).await?;
 
         self.run_hook(
-            store,
             HookPoint::AfterUpdate,
             true,
             object,
@@ -394,11 +393,7 @@ impl Session {
 }
 
 impl Session {
-    pub async fn create_object(
-        &mut self,
-        store: Option<SessionStore>,
-        tags: Tags,
-    ) -> Result<Object> {
+    pub async fn create_object(&mut self, tags: Tags) -> Result<Object> {
         self.require_mutable()?;
         self.identity.check_perm("object.create")?;
         self.validate_tags(&tags)?;
@@ -412,7 +407,6 @@ impl Session {
             updated: time,
         };
         self.run_hook(
-            store.clone(),
             HookPoint::BeforeCreate,
             false,
             &mut object,
@@ -438,7 +432,6 @@ impl Session {
             .await?;
 
         self.run_hook(
-            store.clone(),
             HookPoint::AfterCreate,
             true,
             &mut object,
@@ -449,11 +442,15 @@ impl Session {
         self.emit_event(EventKind::Create, object.clone(), Default::default())
             .await;
 
-        self.return_object(store, object).await
+        self.return_object(object).await
     }
 
-    pub async fn get_object_inner(&mut self, id: Uuid) -> Result<Object> {
-        let sql = "select * from object where id = $1";
+    pub async fn get_object_inner(&mut self, id: Uuid, lock: bool) -> Result<Object> {
+        let sql = if lock {
+            "select * from object where id = $1 for no key update"
+        } else {
+            "select * from object where id = $1"
+        };
         let sql = self.prepare_stmt(sql, &[Type::UUID]).await?;
         let row = self.connection.query_opt(&sql, &[&id]).await?;
         let row = match row {
@@ -466,41 +463,34 @@ impl Session {
         Ok(object)
     }
 
-    pub async fn get_object(&mut self, store: Option<SessionStore>, id: Uuid) -> Result<Object> {
+    pub async fn get_object(&mut self, id: Uuid, lock: bool) -> Result<Object> {
         self.identity.check_perm("object.get")?;
-        let object = self.get_object_inner(id).await?;
-        self.return_object(store, object).await
+        let object = self.get_object_inner(id, lock).await?;
+        self.return_object(object).await
     }
 
-    pub async fn update_object(
-        &mut self,
-        store: Option<SessionStore>,
-        id: Uuid,
-        tags: Tags,
-        force: bool,
-    ) -> Result<Object> {
+    pub async fn update_object(&mut self, id: Uuid, tags: Tags, force: bool) -> Result<Object> {
         self.require_mutable()?;
         self.identity.check_perm("object.edit")?;
         self.validate_tags(&tags)?;
 
         debug!(%id, "update object");
 
-        let mut object = self.get_object_inner(id).await?;
+        let mut object = self.get_object_inner(id, true).await?;
         self.check_access(&object, AccessKind::Edit)?;
         let old_object = object.clone();
 
         if !object.update(tags, force) {
-            return self.return_object(store, object).await;
+            return self.return_object(object).await;
         }
 
-        self.submit_change(store.clone(), &mut object, old_object, Default::default())
+        self.submit_change(&mut object, old_object, Default::default())
             .await?;
-        self.return_object(store, object).await
+        self.return_object(object).await
     }
 
     pub async fn replace_object(
         &mut self,
-        store: Option<SessionStore>,
         id: Uuid,
         tags: Tags,
         scopes: Option<HashSet<String>>,
@@ -512,25 +502,20 @@ impl Session {
 
         debug!(%id, "replace object");
 
-        let mut object = self.get_object_inner(id).await?;
+        let mut object = self.get_object_inner(id, true).await?;
         self.check_access(&object, AccessKind::Edit)?;
         let old_object = object.clone();
 
         let Some(deleted_tags) = object.replace(tags, scopes, force) else {
-            return self.return_object(store, object).await;
+            return self.return_object(object).await;
         };
 
-        self.submit_change(store.clone(), &mut object, old_object, deleted_tags)
+        self.submit_change(&mut object, old_object, deleted_tags)
             .await?;
-        self.return_object(store, object).await
+        self.return_object(object).await
     }
 
-    pub async fn delete_object_tags(
-        &mut self,
-        store: Option<SessionStore>,
-        id: Uuid,
-        tags: Vec<String>,
-    ) -> Result<Object> {
+    pub async fn delete_object_tags(&mut self, id: Uuid, tags: Vec<String>) -> Result<Object> {
         self.require_mutable()?;
         self.identity.check_perm("object.edit")?;
         for tag in &tags {
@@ -540,30 +525,29 @@ impl Session {
 
         debug!(%id, "delete object tags");
 
-        let mut object = self.get_object_inner(id).await?;
+        let mut object = self.get_object_inner(id, true).await?;
         self.check_access(&object, AccessKind::Edit)?;
         let old_object = object.clone();
 
         let deleted_tags = object.delete_tags(tags);
         if deleted_tags.is_empty() {
-            return self.return_object(store, object).await;
+            return self.return_object(object).await;
         }
 
-        self.submit_change(store.clone(), &mut object, old_object, deleted_tags)
+        self.submit_change(&mut object, old_object, deleted_tags)
             .await?;
-        self.return_object(store, object).await
+        self.return_object(object).await
     }
 
-    pub async fn delete_object(&mut self, store: Option<SessionStore>, id: Uuid) -> Result<()> {
+    pub async fn delete_object(&mut self, id: Uuid) -> Result<()> {
         self.require_mutable()?;
         self.identity.check_perm("object.delete")?;
 
         debug!(%id, "delete object");
 
-        let mut object = self.get_object_inner(id).await?;
+        let mut object = self.get_object_inner(id, true).await?;
         self.check_access(&object, AccessKind::Delete)?;
         self.run_hook(
-            store.clone(),
             HookPoint::BeforeDelete,
             true,
             &mut object,
@@ -577,7 +561,6 @@ impl Session {
         self.connection.execute(&sql, &[&id]).await?;
 
         self.run_hook(
-            store,
             HookPoint::AfterDelete,
             true,
             &mut object,
@@ -591,12 +574,7 @@ impl Session {
         Ok(())
     }
 
-    pub async fn query(
-        &mut self,
-        store: Option<SessionStore>,
-        filter: Filter,
-        options: QueryOptions,
-    ) -> Result<Vec<Object>> {
+    pub async fn query(&mut self, filter: Filter, options: QueryOptions) -> Result<Vec<Object>> {
         self.identity.check_perm("object.query")?;
 
         let (sql, args, types) = filter.query(&self.identity, options);
@@ -607,10 +585,7 @@ impl Session {
 
         for row in rows {
             // TODO: parallel?
-            objects.push(
-                self.return_object(store.clone(), Object::from_row(row)?)
-                    .await?,
-            );
+            objects.push(self.return_object(Object::from_row(row)?).await?);
         }
 
         Ok(objects)
@@ -618,9 +593,8 @@ impl Session {
 
     pub async fn subscribe(
         &mut self,
-        store: Option<SessionStore>,
         filter: Filter,
-        options: SubscribeOptions,
+        mut options: SubscribeOptions,
         alive: Arc<AtomicBool>,
         mut callback: SubscribeCallback,
     ) -> Result<()> {
@@ -630,7 +604,6 @@ impl Session {
         if let Some(ckpt) = options.checkpoint {
             let objects = self
                 .query(
-                    store,
                     filter.clone(),
                     QueryOptions {
                         checkpoint: Some(ckpt),
@@ -640,19 +613,20 @@ impl Session {
                 )
                 .await?;
             for object in objects {
-                callback(
-                    &object,
-                    if object.created >= ckpt {
+                callback(SubscribeArgs {
+                    object: &object,
+                    kind: if object.created >= ckpt {
                         EventKind::Create
                     } else {
                         EventKind::Update
                     },
-                )
+                    session: Some(self),
+                })
                 .await;
             }
         }
         let mut accept_kinds = 0u8;
-        for kind in options.accept_kinds {
+        for kind in std::mem::take(&mut options.accept_kinds) {
             accept_kinds |= 1 << kind as u8;
         }
         self.novi
@@ -663,23 +637,19 @@ impl Session {
                 identity: self.identity.clone(),
                 accept_kinds,
                 callback: Box::new(callback),
+                options,
             }))
             .await
             .map_err(|_| anyhow!(@IOError "dispatcher disconnected"))?;
         Ok(())
     }
 
-    pub async fn call_function(
-        &mut self,
-        store: SessionStore,
-        name: &str,
-        arguments: &JsonMap,
-    ) -> Result<JsonMap> {
+    pub async fn call_function(&mut self, name: &str, arguments: &JsonMap) -> Result<JsonMap> {
         let novi = self.novi.clone();
         let Some(reg) = novi.functions.get(name) else {
             bail!(@FunctionNotFound "function not found")
         };
 
-        (reg.function)((self, &store), arguments).await
+        (reg.function)(self, arguments).await
     }
 }

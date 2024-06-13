@@ -8,14 +8,15 @@ pub fn pg_pattern_escape(s: &str) -> String {
 }
 
 pub struct QueryBuilder {
-    table: &'static str,
-    selects: String,
-    wheres: Vec<String>,
+    pub table: &'static str,
+    pub selects: String,
+    pub wheres: Vec<String>,
     pub order: Option<String>,
-    limit: Option<u32>,
-    offset: Option<u32>,
-    args: PgArguments,
-    types: Vec<Type>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+    pub args: PgArguments,
+    pub types: Vec<Type>,
+    pub lock: bool,
 }
 
 impl QueryBuilder {
@@ -29,12 +30,8 @@ impl QueryBuilder {
             order: None,
             args: PgArguments::default(),
             types: Vec::new(),
+            lock: false,
         }
-    }
-
-    pub fn select(&mut self, selects: impl Into<String>) -> &mut Self {
-        self.selects = selects.into();
-        self
     }
 
     pub fn add_where(&mut self, clause: impl Into<String>) -> &mut Self {
@@ -51,21 +48,6 @@ impl QueryBuilder {
 
     pub fn bind_string(&mut self, value: String) -> String {
         self.bind(value, Type::TEXT)
-    }
-
-    pub fn order(&mut self, order: impl Into<String>) -> &mut Self {
-        self.order = Some(order.into());
-        self
-    }
-
-    pub fn limit(&mut self, limit: u32) -> &mut Self {
-        self.limit = Some(limit);
-        self
-    }
-
-    pub fn offset(&mut self, offset: u32) -> &mut Self {
-        self.offset = Some(offset);
-        self
     }
 
     fn build_stmt(&self) -> String {
@@ -95,6 +77,9 @@ impl QueryBuilder {
         }
         if let Some(offset) = &self.offset {
             write!(res, " offset {offset}").unwrap();
+        }
+        if self.lock {
+            res += " for no key update";
         }
 
         res

@@ -1,19 +1,14 @@
-use dashmap::DashMap;
 use slab::Slab;
 use std::{
-    ops::Deref,
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
 };
-use tokio::{
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
-};
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
-use tonic::{Extensions, Request, Response, Status, Streaming};
+use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -21,13 +16,10 @@ use crate::{
     filter::{Filter, QueryOptions, TimeRange},
     function::{parse_arguments, parse_json_map, JsonMap},
     hook::{CoreHookArgs, HookAction, HookArgs, ObjectEdits},
-    identity::{Identity, IDENTITIES},
-    misc::{utc_from_timestamp, BoxFuture},
-    proto::{
-        self, new_session_request::SessionMode, query_request::Order, required, tags_from_pb,
-        EventKind,
-    },
-    session::Session,
+    identity::IDENTITIES,
+    misc::utc_from_timestamp,
+    proto::{self, query_request::Order, required, tags_from_pb, EventKind, SessionMode},
+    session::{Session, SessionCommand},
     subscribe::SubscribeOptions,
     token::{IdentityToken, SessionToken},
     Error, Novi, Result,
@@ -52,119 +44,13 @@ pub fn interceptor(mut req: Request<()>) -> Result<Request<()>, Status> {
     Ok(req)
 }
 
-pub type Action = Box<dyn for<'a> FnOnce(&'a mut Session) -> BoxFuture<'a, ()> + Send>;
-
-pub enum Command {
-    Action(Action),
-    End { commit: bool },
-}
-
-pub(crate) struct SessionStoreInner {
-    novi: Novi,
-    pub senders: DashMap<SessionToken, mpsc::Sender<Command>>,
-}
-#[derive(Clone)]
-pub(crate) struct SessionStore(Arc<SessionStoreInner>);
-impl SessionStore {
-    pub async fn new_session(&self, mode: SessionMode) -> Result<(SessionToken, JoinHandle<()>)> {
-        let mut session = self.novi.guest_session(mode).await?;
-        let (tx, mut rx) = mpsc::channel::<Command>(8);
-        let token = session.token().clone();
-        self.senders.insert(token.clone(), tx);
-        let handle = tokio::spawn(async move {
-            while let Some(action) = rx.recv().await {
-                match action {
-                    Command::Action(action) => action(&mut session).await,
-                    Command::End { commit } => {
-                        if let Err(err) = session.end(commit).await {
-                            warn!(?err, "failed to end session");
-                        }
-                        break;
-                    }
-                }
-            }
-        });
-        Ok((token, handle))
-    }
-
-    async fn extract_identity(&self, ext: &Extensions) -> Result<Arc<Identity>> {
-        match ext.get::<IdentityToken>() {
-            Some(identity) => self.novi.identity_from_token(identity).await,
-            None => Ok(self.novi.guest_identity.clone()),
-        }
-    }
-
-    // TODO: optimize
-    async fn submit<R: Send + 'static>(
-        &self,
-        mut ext: Extensions,
-        action: impl for<'a> FnOnce(&'a mut Session, SessionStore) -> BoxFuture<'a, Result<R>>
-            + Send
-            + 'static,
-    ) -> RpcResult<R> {
-        let identity = self.extract_identity(&ext).await?;
-        let (token, handle) = match ext.remove::<SessionToken>() {
-            Some(token) => (token, None),
-            None => {
-                // run in a temporary new session
-                // TODO: Is it possible that the this break the consistency?
-                let (token, handle) = self.new_session(SessionMode::Auto).await?;
-                (token, Some(handle))
-            }
-        };
-        let (tx, rx) = oneshot::channel();
-        let Some(sender) = self.senders.get(&token) else {
-            bail!(@InvalidCredentials "invalid session");
-        };
-        let store = self.clone();
-        let result = sender
-            .send(Command::Action(Box::new(move |session| {
-                session.identity = identity;
-                let fut = action(session, store);
-                Box::pin(async move {
-                    let _ = tx.send(fut.await);
-                })
-            })))
-            .await;
-        if handle.is_some() {
-            // release temporary session
-            let _ = sender.send(Command::End { commit: true }).await;
-        }
-        drop(sender);
-
-        if result.is_err() {
-            bail!(@IOError "failed to submit");
-        }
-        let result = match rx.await {
-            Ok(result) => Response::new(result?),
-            Err(_) => bail!(@IOError "session closed"),
-        };
-
-        if let Some(handle) = handle {
-            // wait for the temporary session to terminate
-            let _ = handle.await;
-        }
-        Ok(result)
-    }
-}
-impl Deref for SessionStore {
-    type Target = SessionStoreInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-type RpcResult<T> = Result<Response<T>, Status>;
+pub(crate) type RpcResult<T> = Result<Response<T>, Status>;
 
 #[derive(Clone)]
-pub struct RpcFacade(SessionStore);
+pub struct RpcFacade(Novi);
 impl RpcFacade {
     pub fn new(novi: Novi) -> Self {
-        Self(SessionStore(Arc::new(SessionStoreInner {
-            novi,
-            senders: DashMap::new(),
-        })))
+        Self(novi)
     }
 }
 
@@ -172,9 +58,9 @@ impl RpcFacade {
 impl proto::novi_server::Novi for RpcFacade {
     async fn login(&self, req: Request<proto::LoginRequest>) -> RpcResult<proto::LoginReply> {
         let req = req.into_inner();
-        let identity = self.0.novi.login(&req.username, &req.password).await?;
+        let identity = self.0.login(&req.username, &req.password).await?;
         let token = IdentityToken::new();
-        identity.save_to_db(&self.0.novi, &token).await?;
+        identity.save_to_db(&self.0, &token).await?;
         Ok(Response::new(proto::LoginReply {
             identity: token.to_string(),
         }))
@@ -188,13 +74,13 @@ impl proto::novi_server::Novi for RpcFacade {
         if !self.0.extract_identity(&ext).await?.is_admin() {
             bail!(@PermissionDenied "only admin can login as other users");
         }
-        let user = self.0.novi.get_user(required(req.user)?.into()).await?;
-        let identity = self.0.novi.login_as(user);
+        let user = self.0.get_user(required(req.user)?.into()).await?;
+        let identity = self.0.login_as(user);
         let token = if req.temporary {
             identity.cache_token()
         } else {
             let token = IdentityToken::new();
-            identity.save_to_db(&self.0.novi, &token).await?;
+            identity.save_to_db(&self.0, &token).await?;
             token
         };
         Ok(Response::new(proto::LoginAsReply {
@@ -206,11 +92,11 @@ impl proto::novi_server::Novi for RpcFacade {
         &self,
         req: Request<proto::UseMasterKeyRequest>,
     ) -> RpcResult<proto::UseMasterKeyReply> {
-        if self.0.novi.config.master_key != Some(req.into_inner().key) {
+        if self.0.config.master_key != Some(req.into_inner().key) {
             bail!(@InvalidCredentials "invalid master key");
         }
         let token = IdentityToken::new();
-        IDENTITIES.insert(token.clone(), self.0.novi.internal_identity.clone());
+        IDENTITIES.insert(token.clone(), self.0.internal_identity.clone());
         Ok(Response::new(proto::UseMasterKeyReply {
             identity: token.to_string(),
         }))
@@ -242,12 +128,12 @@ impl proto::novi_server::Novi for RpcFacade {
 
         // spawns a task to end the session if the client disconnects
         tokio::spawn({
-            let store = self.0.clone();
+            let novi = self.0.clone();
             let token = token.clone();
             async move {
                 tx.closed().await;
                 warn!("client disconnected, ending session");
-                store.senders.remove(&token);
+                novi.session_store.remove(&token);
             }
         });
 
@@ -262,10 +148,10 @@ impl proto::novi_server::Novi for RpcFacade {
         let Some(token) = ext.remove::<SessionToken>() else {
             bail!(@InvalidCredentials "unauthenticated");
         };
-        let Some((_, tx)) = self.0.senders.remove(&token) else {
+        let Some((_, tx)) = self.0.session_store.remove(&token) else {
             bail!(@InvalidCredentials "invalid session");
         };
-        tx.send(Command::End { commit: req.commit })
+        tx.send(SessionCommand::End { commit: req.commit })
             .await
             .map_err(|_| anyhow!("failed to end session"))?;
         Ok(Response::new(proto::EndSessionReply {}))
@@ -277,10 +163,10 @@ impl proto::novi_server::Novi for RpcFacade {
     ) -> RpcResult<proto::CreateObjectReply> {
         let (_, ext, req) = req.into_parts();
         self.0
-            .submit(ext, move |session, store| {
+            .submit(ext, move |session| {
                 Box::pin(async move {
                     let object = session
-                        .create_object(Some(store), tags_from_pb(required(req.tags)?))
+                        .create_object(tags_from_pb(required(req.tags)?))
                         .await?;
                     Ok(proto::CreateObjectReply {
                         object: Some(object.into()),
@@ -296,10 +182,10 @@ impl proto::novi_server::Novi for RpcFacade {
     ) -> RpcResult<proto::GetObjectReply> {
         let (_, ext, req) = req.into_parts();
         self.0
-            .submit(ext, move |session, store| {
+            .submit(ext, move |session| {
                 Box::pin(async move {
                     let object = session
-                        .get_object(Some(store), required(req.id)?.into())
+                        .get_object(required(req.id)?.into(), req.lock)
                         .await?;
                     Ok(proto::GetObjectReply {
                         object: Some(object.into()),
@@ -315,11 +201,10 @@ impl proto::novi_server::Novi for RpcFacade {
     ) -> RpcResult<proto::UpdateObjectReply> {
         let (_, ext, req) = req.into_parts();
         self.0
-            .submit(ext, move |session, store| {
+            .submit(ext, move |session| {
                 Box::pin(async move {
                     let object = session
                         .update_object(
-                            Some(store),
                             required(req.id)?.into(),
                             tags_from_pb(required(req.tags)?),
                             req.force,
@@ -339,11 +224,10 @@ impl proto::novi_server::Novi for RpcFacade {
     ) -> RpcResult<proto::ReplaceObjectReply> {
         let (_, ext, req) = req.into_parts();
         self.0
-            .submit(ext, move |session, store| {
+            .submit(ext, move |session| {
                 Box::pin(async move {
                     let object = session
                         .replace_object(
-                            Some(store),
                             required(req.id)?.into(),
                             tags_from_pb(required(req.tags)?),
                             req.scopes.map(|it| it.scopes.into_iter().collect()),
@@ -364,10 +248,10 @@ impl proto::novi_server::Novi for RpcFacade {
     ) -> RpcResult<proto::DeleteObjectTagsReply> {
         let (_, ext, req) = req.into_parts();
         self.0
-            .submit(ext, move |session, store| {
+            .submit(ext, move |session| {
                 Box::pin(async move {
                     let object = session
-                        .delete_object_tags(Some(store), required(req.id)?.into(), req.tags)
+                        .delete_object_tags(required(req.id)?.into(), req.tags)
                         .await?;
                     Ok(proto::DeleteObjectTagsReply {
                         object: Some(object.into()),
@@ -383,11 +267,9 @@ impl proto::novi_server::Novi for RpcFacade {
     ) -> RpcResult<proto::DeleteObjectReply> {
         let (_, ext, req) = req.into_parts();
         self.0
-            .submit(ext, move |session, store| {
+            .submit(ext, move |session| {
                 Box::pin(async move {
-                    session
-                        .delete_object(Some(store), required(req.id)?.into())
-                        .await?;
+                    session.delete_object(required(req.id)?.into()).await?;
                     Ok(proto::DeleteObjectReply {})
                 })
             })
@@ -403,11 +285,10 @@ impl proto::novi_server::Novi for RpcFacade {
             Ok((after, before))
         }
         self.0
-            .submit(ext, move |session, store| {
+            .submit(ext, move |session| {
                 Box::pin(async move {
                     let objects = session
                         .query(
-                            Some(store),
                             filter,
                             QueryOptions {
                                 checkpoint: req.checkpoint.map(utc_from_timestamp).transpose()?,
@@ -416,6 +297,7 @@ impl proto::novi_server::Novi for RpcFacade {
                                 order: Order::try_from(req.order)
                                     .map_err(|_| anyhow!(@InvalidArgument "invalid order"))?,
                                 limit: req.limit,
+                                lock: req.lock,
                             },
                         )
                         .await?;
@@ -443,35 +325,49 @@ impl proto::novi_server::Novi for RpcFacade {
             .into_iter()
             .filter_map(|it| EventKind::try_from(it).ok())
             .collect();
+        let session = req.session.and_then(|it| SessionMode::try_from(it).ok());
         let options = SubscribeOptions {
             checkpoint,
             accept_kinds,
+            session,
+            latest: req.latest,
+            recheck: req.recheck,
         };
 
         self.0
-            .submit(ext, move |session, store| {
+            .submit(ext, move |session| {
                 Box::pin(async move {
                     let alive = Arc::new(AtomicBool::new(true));
                     session
                         .subscribe(
-                            Some(store),
                             filter,
                             options,
                             alive.clone(),
-                            Box::new(move |object, kind| {
+                            Box::new(move |args| {
                                 let tx = tx.clone();
                                 let alive = alive.clone();
                                 Box::pin(async move {
-                                    if tx
-                                        .send(Ok(proto::SubscribeReply {
-                                            object: Some(object.clone().into()),
-                                            kind: kind.into(),
-                                        }))
-                                        .await
-                                        .is_err()
-                                    {
-                                        debug!("subscriber disconnected");
-                                        alive.store(false, Ordering::Relaxed);
+                                    let pb = proto::SubscribeReply {
+                                        object: Some(args.object.clone().into()),
+                                        kind: args.kind.into(),
+                                        session: args
+                                            .session
+                                            .as_ref()
+                                            .map(|it| it.token().to_string()),
+                                    };
+                                    let fut = async move {
+                                        if tx.send(Ok(pb)).await.is_err() {
+                                            debug!("subscriber disconnected");
+                                            alive.store(false, Ordering::Relaxed);
+                                        }
+                                        Ok(())
+                                    };
+                                    if let Some(session) = args.session {
+                                        if let Err(err) = session.yield_self(fut).await {
+                                            warn!(?err, "failed to yield");
+                                        }
+                                    } else {
+                                        let _ = fut.await;
                                     }
                                 })
                             }),
@@ -563,7 +459,6 @@ impl proto::novi_server::Novi for RpcFacade {
         });
 
         self.0
-            .novi
             .register_core_hook(
                 point,
                 filter,
@@ -585,8 +480,8 @@ impl proto::novi_server::Novi for RpcFacade {
                             .await
                             .map_err(|_| anyhow!(@IOError "core hook client disconnected"))?
                     };
-                    if let Ok((session, store)) = args.session {
-                        Box::pin(session.yield_self(store.clone(), fut))
+                    if let Ok(session) = args.session {
+                        Box::pin(session.yield_self(fut))
                     } else {
                         Box::pin(fut)
                     }
@@ -682,7 +577,6 @@ impl proto::novi_server::Novi for RpcFacade {
         });
 
         self.0
-            .novi
             .register_hook(
                 &function,
                 before,
@@ -704,8 +598,7 @@ impl proto::novi_server::Novi for RpcFacade {
                             .await
                             .map_err(|_| anyhow!(@IOError "hook client disconnected"))?
                     };
-                    let (session, store) = args.session;
-                    Box::pin(session.yield_self(store.clone(), fut))
+                    Box::pin(args.session.yield_self(fut))
                 }),
             )
             .await?;
@@ -744,14 +637,14 @@ impl proto::novi_server::Novi for RpcFacade {
             .extract_identity(&ext)
             .await?
             .check_perm(&format!("function.register:{name}"))?;
-        info!(name, hookable=init.hookable, "register function");
+        info!(name, hookable = init.hookable, "register function");
 
         let (stream_tx, stream_rx) = mpsc::channel::<Result<proto::RegFunctionReply, Status>>(8);
         let (call_tx, mut call_rx) =
             mpsc::channel::<(proto::RegFunctionReply, oneshot::Sender<Result<JsonMap>>)>(32);
         tokio::spawn({
             let stream_tx = stream_tx.clone();
-            let novi = self.0.novi.clone();
+            let novi = self.0.clone();
             let name = name.clone();
             async move {
                 let mut result_txs = Slab::new();
@@ -795,31 +688,28 @@ impl proto::novi_server::Novi for RpcFacade {
         });
 
         self.0
-            .novi
             .register_function(
                 name,
-                Arc::new(
-                    move |(session, store): (&mut Session, &SessionStore), arguments: &JsonMap| {
-                        let token = session.token().to_string();
-                        let identity = session.identity.clone();
-                        let call_tx = call_tx.clone();
-                        Box::pin(session.yield_self(store.clone(), async move {
-                            let (result_tx, result_rx) = oneshot::channel::<Result<JsonMap>>();
-                            let reply = proto::RegFunctionReply {
-                                call_id: 0,
-                                arguments: arguments.to_string(),
-                                session: token,
-                                identity: identity.cache_token().to_string(),
-                            };
-                            if call_tx.send((reply, result_tx)).await.is_err() {
-                                bail!(@IOError "function provider disconnected");
-                            }
-                            result_rx
-                                .await
-                                .map_err(|_| anyhow!(@IOError "function provider disconnected"))?
-                        }))
-                    },
-                ),
+                Arc::new(move |session: &mut Session, arguments: &JsonMap| {
+                    let token = session.token().to_string();
+                    let identity = session.identity.clone();
+                    let call_tx = call_tx.clone();
+                    Box::pin(session.yield_self(async move {
+                        let (result_tx, result_rx) = oneshot::channel::<Result<JsonMap>>();
+                        let reply = proto::RegFunctionReply {
+                            call_id: 0,
+                            arguments: arguments.to_string(),
+                            session: token,
+                            identity: identity.cache_token().to_string(),
+                        };
+                        if call_tx.send((reply, result_tx)).await.is_err() {
+                            bail!(@IOError "function provider disconnected");
+                        }
+                        result_rx
+                            .await
+                            .map_err(|_| anyhow!(@IOError "function provider disconnected"))?
+                    }))
+                }),
                 init.hookable,
             )
             .await?;
@@ -843,10 +733,10 @@ impl proto::novi_server::Novi for RpcFacade {
     ) -> RpcResult<proto::CallFunctionReply> {
         let (_, ext, req) = req.into_parts();
         self.0
-            .submit(ext, move |session, store| {
+            .submit(ext, move |session| {
                 Box::pin(async move {
                     let result = session
-                        .call_function(store, &req.name, &parse_arguments(req.arguments)?)
+                        .call_function(&req.name, &parse_arguments(req.arguments)?)
                         .await?;
                     Ok(proto::CallFunctionReply {
                         result: result.to_string(),

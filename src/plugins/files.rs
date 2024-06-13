@@ -8,19 +8,31 @@ pub async fn init(novi: &Novi) -> Result<()> {
     novi.register_function(
         "file.url".to_owned(),
         Arc::new(move |(session, store), args: &JsonMap| {
+            fn to_result(url: String) -> Result<JsonMap> {
+                Ok(iter::once(("url".to_owned(), url.into())).collect())
+            }
             Box::pin(async move {
                 let depth_limit = args.get_u64("depth_limit").unwrap_or(5);
                 let id = args.get_id("id")?;
                 let variant = args.get_str("variant").unwrap_or("original");
+                let only_ref = args.get_bool("only_ref").unwrap_or_default();
+
+                let itself = || to_result(format!("object://{id}/{variant}"));
 
                 let object = session.get_object(Some(store.clone()), id).await?;
                 let Some(url_str) = object.get_file(variant)? else {
+                    if only_ref {
+                        return itself();
+                    }
                     bail!(@FileNotFound "null file field");
                 };
                 let Ok(url) = Url::parse(url_str) else {
+                    if only_ref {
+                        return itself();
+                    }
                     bail!(@InvalidArgument "invalid URL")
                 };
-                let url: serde_json::Value = match url.scheme() {
+                match url.scheme() {
                     "object" => {
                         if depth_limit == 0 {
                             bail!(@FileNotFound "depth limit exceeded");
@@ -36,13 +48,17 @@ pub async fn init(novi: &Novi) -> Result<()> {
                         ]
                         .into_iter()
                         .collect();
-                        return session
+                        session
                             .call_function(store.clone(), "file.url", &args)
-                            .await;
+                            .await
                     }
-                    _ => url_str.into(),
-                };
-                Ok(iter::once(("url".to_owned(), url)).collect())
+                    _ => {
+                        if only_ref {
+                            return itself();
+                        }
+                        to_result(url_str.to_owned())
+                    }
+                }
             })
         }),
         true,
@@ -66,7 +82,6 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     };
 
                     let object = session.get_object(Some(store.clone()), id).await?;
-                    dbg!(variant, &object.tags);
                     if object.get_file(variant).is_ok()
                         && !args.get_bool("overwrite").unwrap_or(false)
                     {
@@ -110,14 +125,13 @@ pub async fn init(novi: &Novi) -> Result<()> {
     novi.register_function(
         "file.store".to_owned(),
         Arc::new(move |(session, store), args: &JsonMap| {
-            let store = store.clone();
             Box::pin(async move {
                 let variant = args.get_str("variant").unwrap_or("original");
                 session
                     .identity
                     .check_perm(&format!("file.store:{variant}"))?;
                 session
-                    .call_function(store, "file.store", args)
+                    .call_function(store.clone(), "file.store", args)
                     .await
             })
         }),

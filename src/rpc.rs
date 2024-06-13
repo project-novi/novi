@@ -744,7 +744,7 @@ impl proto::novi_server::Novi for RpcFacade {
             .extract_identity(&ext)
             .await?
             .check_perm(&format!("function.register:{name}"))?;
-        info!(name, "register function");
+        info!(name, hookable=init.hookable, "register function");
 
         let (stream_tx, stream_rx) = mpsc::channel::<Result<proto::RegFunctionReply, Status>>(8);
         let (call_tx, mut call_rx) =

@@ -8,56 +8,55 @@ pub async fn init(novi: &Novi) -> Result<()> {
     novi.register_function(
         "file.url".to_owned(),
         Arc::new(move |(session, store), args: &JsonMap| {
-            fn to_result(url: String) -> Result<JsonMap> {
-                Ok(iter::once(("url".to_owned(), url.into())).collect())
-            }
             Box::pin(async move {
                 let depth_limit = args.get_u64("depth_limit").unwrap_or(5);
                 let id = args.get_id("id")?;
                 let variant = args.get_str("variant").unwrap_or("original");
-                let only_ref = args.get_bool("only_ref").unwrap_or_default();
+                let allow_invalid = args.get_bool("allow_invalid").unwrap_or_default();
 
-                let itself = || to_result(format!("object://{id}/{variant}"));
+                let to_result = |url: Option<String>| {
+                    Ok([
+                        ("url".to_owned(), url.into()),
+                        ("id".to_owned(), id.to_string().into()),
+                        ("variant".to_owned(), variant.to_owned().into()),
+                    ]
+                    .into_iter()
+                    .collect())
+                };
 
                 let object = session.get_object(Some(store.clone()), id).await?;
                 let Some(url_str) = object.get_file(variant)? else {
-                    if only_ref {
-                        return itself();
+                    if allow_invalid {
+                        return to_result(None);
                     }
                     bail!(@FileNotFound "null file field");
                 };
                 let Ok(url) = Url::parse(url_str) else {
-                    if only_ref {
-                        return itself();
+                    if allow_invalid {
+                        return to_result(Some(url_str.to_owned()));
                     }
                     bail!(@InvalidArgument "invalid URL")
                 };
-                match url.scheme() {
-                    "object" => {
-                        if depth_limit == 0 {
-                            bail!(@FileNotFound "depth limit exceeded");
-                        }
-                        let Some(id) = url.host_str().and_then(|it| Uuid::from_str(it).ok()) else {
-                            bail!(@InvalidArgument "invalid object ID")
-                        };
-                        let variant = url.path().strip_prefix('/').unwrap_or("original");
-                        let args = [
-                            ("depth_limit".to_owned(), (depth_limit - 1).into()),
-                            ("id".to_owned(), id.to_string().into()),
-                            ("variant".to_owned(), variant.to_owned().into()),
-                        ]
-                        .into_iter()
-                        .collect();
-                        session
-                            .call_function(store.clone(), "file.url", &args)
-                            .await
+                if url.scheme() == "object" {
+                    if depth_limit == 0 {
+                        bail!(@FileNotFound "depth limit exceeded");
                     }
-                    _ => {
-                        if only_ref {
-                            return itself();
-                        }
-                        to_result(url_str.to_owned())
-                    }
+                    let Some(id) = url.host_str().and_then(|it| Uuid::from_str(it).ok()) else {
+                        bail!(@InvalidArgument "invalid object ID")
+                    };
+                    let variant = url.path().strip_prefix('/').unwrap_or("original");
+                    let args = [
+                        ("depth_limit".to_owned(), (depth_limit - 1).into()),
+                        ("id".to_owned(), id.to_string().into()),
+                        ("variant".to_owned(), variant.to_owned().into()),
+                    ]
+                    .into_iter()
+                    .collect();
+                    session
+                        .call_function(store.clone(), "file.url", &args)
+                        .await
+                } else {
+                    to_result(Some(url_str.to_owned()))
                 }
             })
         }),
@@ -131,7 +130,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     .identity
                     .check_perm(&format!("file.store:{variant}"))?;
                 session
-                    .call_function(store.clone(), "file.store", args)
+                    .call_function(store.clone(), "file.store.impl", args)
                     .await
             })
         }),

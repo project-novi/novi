@@ -47,12 +47,14 @@ impl Inner {
     }
 
     pub async fn register_hook(&self, function: &str, before: bool, f: HookCallback) -> Result<()> {
-        let mut failed = false;
+        let mut cant_hook = false;
+        let mut success = false;
         self.functions.alter(function, |_, reg| {
             if !reg.hookable {
-                failed = true;
+                cant_hook = true;
                 return reg;
             }
+            success = true;
             let orig_f = reg.function;
             FunctionRegistry {
                 function: if before {
@@ -101,8 +103,11 @@ impl Inner {
             }
         });
 
-        if failed {
+        if cant_hook {
             bail!(@PermissionDenied "Function is not hookable. Try hooking `func.impl` instead");
+        }
+        if !success {
+            bail!(@FunctionNotFound "function not found");
         }
 
         Ok(())

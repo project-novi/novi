@@ -103,6 +103,7 @@ message CreateObjectReply { Object object = 1; }
 message GetObjectRequest {
   UUID id = 1;
   bool lock = 2;
+  optional string precondition = 3;
 }
 message GetObjectReply { Object object = 1; }
 

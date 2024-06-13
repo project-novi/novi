@@ -246,6 +246,8 @@ pub enum ErrorKind {
     FunctionNotFound,
     ObjectNotFound,
 
+    PreconditionFailed,
+
     InvalidArgument,
     InvalidCredentials,
     InvalidTag,
@@ -270,7 +272,7 @@ impl ErrorKind {
                 Code::InvalidArgument
             }
             ErrorKind::InvalidCredentials => Code::Unauthenticated,
-            ErrorKind::InvalidState => Code::FailedPrecondition,
+            ErrorKind::InvalidState | ErrorKind::PreconditionFailed => Code::FailedPrecondition,
         }
     }
 }

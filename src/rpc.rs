@@ -181,12 +181,18 @@ impl proto::novi_server::Novi for RpcFacade {
         req: Request<proto::GetObjectRequest>,
     ) -> RpcResult<proto::GetObjectReply> {
         let (_, ext, req) = req.into_parts();
+        let precondition: Option<Filter> = req.precondition.map(|it| it.parse()).transpose()?;
         self.0
             .submit(ext, move |session| {
                 Box::pin(async move {
                     let object = session
                         .get_object(required(req.id)?.into(), req.lock)
                         .await?;
+                    if let Some(precondition) = precondition {
+                        if !precondition.matches(&object, &Default::default()) {
+                            bail!(@PreconditionFailed);
+                        }
+                    }
                     Ok(proto::GetObjectReply {
                         object: Some(object.into()),
                     })

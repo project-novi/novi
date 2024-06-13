@@ -115,7 +115,7 @@ impl Error {
         }
     }
 
-    pub fn from_statu(mut pb: Status) -> Self {
+    pub fn from_status(mut pb: Status) -> Self {
         let kind = pb
             .metadata_mut()
             .remove("kind")

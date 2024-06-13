@@ -318,7 +318,10 @@ impl From<Error> for Status {
             error!(?err);
         }
 
-        let mut status = Status::new(err.kind.to_grpc_code(), err.to_string());
+        let mut status = Status::new(
+            err.kind.to_grpc_code(),
+            err.source.map_or_else(String::new, |it| it.to_string()),
+        );
         let metadata = status.metadata_mut();
         for (key, value) in err.metadata {
             metadata.insert(key, value.parse().unwrap());

@@ -17,9 +17,9 @@ use crate::{
     misc::BoxFuture,
     novi::Novi,
     object::Object,
-    proto::{reg_core_hook_request::HookPoint, EventKind, SessionMode},
+    proto::{reg_core_hook_request::HookPoint, EventKind},
     session::Session,
-    ErrorKind, Result,
+    Result,
 };
 
 pub type SubscribeCallback =
@@ -34,18 +34,12 @@ pub struct SubscribeArgs<'a> {
 pub struct SubscribeOptions {
     pub checkpoint: Option<DateTime<Utc>>,
     pub accept_kinds: Vec<EventKind>,
-    pub session: Option<SessionMode>,
-    pub latest: bool,
-    pub recheck: bool,
 }
 impl Default for SubscribeOptions {
     fn default() -> Self {
         Self {
             checkpoint: None,
             accept_kinds: vec![EventKind::Create, EventKind::Update, EventKind::Delete],
-            session: None,
-            latest: true,
-            recheck: true,
         }
     }
 }
@@ -62,7 +56,6 @@ pub(crate) struct Subscriber {
     pub identity: Arc<Identity>,
     pub accept_kinds: u8,
     pub callback: SubscribeCallback,
-    pub options: SubscribeOptions,
 }
 
 pub(crate) enum DispatchWorkerCommand {
@@ -79,7 +72,7 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
             }
             DispatchWorkerCommand::Event(Event {
                 kind,
-                mut object,
+                object,
                 deleted_tags,
             }) => {
                 let id = object.id;
@@ -95,75 +88,39 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                     if sub.accept_kinds & (1 << kind as u8) != 0
                         && sub.filter.matches(&object, &deleted_tags)
                     {
-                        if let Some(mode) = sub.options.session {
-                            let Ok(mut session) = novi.guest_session(mode).await else {
-                                error!("failed to create session for subscriber");
-                                continue;
-                            };
-                            if sub.options.latest {
-                                match session.get_object(id, true).await {
-                                    Ok(new_object) => {
-                                        object = new_object;
-                                        if sub.options.recheck
-                                            && !sub.filter.matches(&object, &deleted_tags)
-                                        {
-                                            continue;
-                                        }
-                                    }
-                                    Err(err) if err.kind == ErrorKind::ObjectNotFound => {
-                                        continue;
-                                    }
-                                    Err(err) => {
-                                        error!(?err, "failed to get object");
-                                        continue;
-                                    }
-                                }
-                            }
-                            if let Err(err) = session.run_before_view(&mut object).await {
-                                error!(?err, "failed to return object");
+                        // Run the BeforeView hooks manually since we're not in a session
+                        let hooks = novi.core_hooks.read().await;
+                        for (filter, f) in &hooks[HookPoint::BeforeView as usize] {
+                            if !filter.matches(&object, &Default::default()) {
                                 continue;
                             }
-                            (sub.callback)(SubscribeArgs {
-                                object: &object,
-                                kind,
-                                session: Some(&mut session),
-                            })
-                            .await;
-                        } else {
-                            // Run the BeforeView hooks manually since we're not in a session
-                            let hooks = novi.core_hooks.read().await;
-                            for (filter, f) in &hooks[HookPoint::BeforeView as usize] {
-                                if !filter.matches(&object, &Default::default()) {
-                                    continue;
-                                }
 
-                                let result: Result<()> = async {
-                                    let edits = f(CoreHookArgs {
-                                        object: &object,
-                                        old_object: None,
-                                        session: Err(&sub.identity),
-                                    })
-                                    .await?;
-                                    if !edits.is_empty() {
-                                        bail!(@InvalidArgument "hook must not modify object");
-                                    }
-                                    Ok(())
+                            let result: Result<()> = async {
+                                let edits = f(CoreHookArgs {
+                                    object: &object,
+                                    old_object: None,
+                                    session: Err(&sub.identity),
+                                })
+                                .await?;
+                                if !edits.is_empty() {
+                                    bail!(@InvalidArgument "hook must not modify object");
                                 }
-                                .await;
-                                if let Err(err) = result {
-                                    error!(?err, "failed to run hook");
-                                    continue;
-                                }
+                                Ok(())
                             }
-                            drop(hooks);
-
-                            (sub.callback)(SubscribeArgs {
-                                object: &object,
-                                kind,
-                                session: None,
-                            })
                             .await;
+                            if let Err(err) = result {
+                                error!(?err, "failed to run hook");
+                                continue;
+                            }
                         }
+                        drop(hooks);
+
+                        (sub.callback)(SubscribeArgs {
+                            object: &object,
+                            kind,
+                            session: None,
+                        })
+                        .await;
                     }
                 }
             }

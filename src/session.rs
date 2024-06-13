@@ -637,7 +637,6 @@ impl Session {
                 identity: self.identity.clone(),
                 accept_kinds,
                 callback: Box::new(callback),
-                options,
             }))
             .await
             .map_err(|_| anyhow!(@IOError "dispatcher disconnected"))?;

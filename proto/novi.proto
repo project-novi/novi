@@ -159,9 +159,6 @@ message SubscribeRequest {
   string filter = 1;
   optional int64 checkpoint = 2;
   repeated EventKind accept_kinds = 3;
-  optional SessionMode session = 4;
-  bool latest = 5;
-  bool recheck = 6;
 }
 message SubscribeReply {
   Object object = 1;

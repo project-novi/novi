@@ -325,13 +325,9 @@ impl proto::novi_server::Novi for RpcFacade {
             .into_iter()
             .filter_map(|it| EventKind::try_from(it).ok())
             .collect();
-        let session = req.session.and_then(|it| SessionMode::try_from(it).ok());
         let options = SubscribeOptions {
             checkpoint,
             accept_kinds,
-            session,
-            latest: req.latest,
-            recheck: req.recheck,
         };
 
         self.0

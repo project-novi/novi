@@ -9,6 +9,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
         "file.url".to_owned(),
         Arc::new(move |(session, store), args: &JsonMap| {
             Box::pin(async move {
+                dbg!(args);
                 let depth_limit = args.get_u64("depth_limit").unwrap_or(5);
                 let id = args.get_id("id")?;
                 let variant = args.get_str("variant").unwrap_or("original");
@@ -25,11 +26,11 @@ pub async fn init(novi: &Novi) -> Result<()> {
                 };
 
                 let object = session.get_object(Some(store.clone()), id).await?;
-                let Some(url_str) = object.get_file(variant)? else {
+                let Ok(Some(url_str)) = object.get_file(variant) else {
                     if allow_invalid {
                         return to_result(None);
                     }
-                    bail!(@FileNotFound "null file field");
+                    bail!(@FileNotFound "empty file field");
                 };
                 let Ok(url) = Url::parse(url_str) else {
                     if allow_invalid {

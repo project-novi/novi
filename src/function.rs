@@ -3,7 +3,7 @@ use serde_json::Map;
 use std::{fmt, str::FromStr, sync::Arc};
 use uuid::Uuid;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct JsonMap(Map<String, serde_json::Value>);
 impl JsonMap {
     pub fn new(map: Map<String, serde_json::Value>) -> Self {

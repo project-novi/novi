@@ -444,7 +444,7 @@ impl Default for QueryOptions {
             updated_range: TimeRange::default(),
             order: Order::CreatedDesc,
             limit: None,
-            lock: true,
+            lock: false,
         }
     }
 }

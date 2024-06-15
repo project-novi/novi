@@ -336,7 +336,10 @@ pub(crate) mod parse {
     pub(crate) fn tag_name(i: &str) -> Result<String> {
         map(
             recognize(alt((
-                take_while1(valid_nonspace_tag_char),
+                preceded(
+                    take_while_m_n(1, 1, |c| c != '-' && valid_nonspace_tag_char(c)),
+                    take_while1(valid_nonspace_tag_char),
+                ),
                 preceded(one_of("@#"), take_while(valid_nonspace_tag_char)),
             ))),
             str::to_owned,
@@ -601,6 +604,7 @@ mod test {
             "@name % test",
             "@name != test",
             "@[name tag]",
+            "-test-hyphen",
         ] {
             test.parse::<Filter>().unwrap();
         }

@@ -10,7 +10,14 @@ pub type Tags = HashMap<String, Option<String>>;
 pub type TagDict = BTreeMap<String, TagValue>;
 
 pub fn valid_nonspace_tag_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == ':' || c == '·' || c == '.' || c == '：' || c == '\''
+    c.is_alphanumeric()
+        || c == '_'
+        || c == ':'
+        || c == '·'
+        || c == '.'
+        || c == '：'
+        || c == '\''
+        || c == '-'
 }
 
 pub fn valid_tag_char(c: char) -> bool {
@@ -32,6 +39,9 @@ pub fn validate_tag_name(tag: &str) -> Result<()> {
         let Some(first) = chars.next() else {
             return Err("empty tag");
         };
+        if first == '-' {
+            return Err("tag cannot start with a hyphen");
+        }
         if (first != '@' && first != '#' && !valid_tag_char(first)) || !chars.all(valid_tag_char) {
             return Err("invalid tag");
         }

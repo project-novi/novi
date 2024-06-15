@@ -109,15 +109,11 @@ impl proto::novi_server::Novi for RpcFacade {
         req: Request<proto::NewSessionRequest>,
     ) -> RpcResult<Self::NewSessionStream> {
         let req = req.into_inner();
-        info!("new session");
+        let mode = SessionMode::try_from(req.mode)
+            .map_err(|_| anyhow!(@InvalidArgument "invalid session mode"))?;
+        info!(?mode, "new session");
 
-        let (token, _) = self
-            .0
-            .new_session(
-                SessionMode::try_from(req.mode)
-                    .map_err(|_| anyhow!(@InvalidArgument "invalid session mode"))?,
-            )
-            .await?;
+        let (token, _) = self.0.new_session(mode).await?;
 
         let (tx, rx) = mpsc::channel::<Result<proto::NewSessionReply, Status>>(1);
         tx.send(Ok(proto::NewSessionReply {

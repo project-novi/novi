@@ -1,4 +1,4 @@
-use std::{iter, path::PathBuf, str::FromStr, sync::Arc};
+use std::{path::PathBuf, str::FromStr, sync::Arc};
 use url::Url;
 use uuid::Uuid;
 
@@ -64,27 +64,18 @@ pub async fn init(novi: &Novi) -> Result<()> {
     .await?;
 
     novi.register_function(
-        "file.store.impl".to_owned(),
+        "file.put.impl".to_owned(),
         {
             let novi = novi.clone();
-            Arc::new(move |session, args: &JsonMap| {
+            Arc::new(move |_session, args: &JsonMap| {
                 let novi = novi.clone();
                 Box::pin(async move {
-                    let id = args.get_id("id")?;
-                    let variant = args.get_str("variant").unwrap_or("original");
                     let storage = args.get_str("storage").unwrap_or("default");
                     let filename = args.get_str("filename").map(str::to_owned).ok();
 
                     let Some(client) = novi.config.ipfs_clients.get(storage) else {
                         bail!(@InvalidArgument "invalid storage")
                     };
-
-                    let object = session.get_object(id, true).await?;
-                    if object.get_file(variant).is_ok()
-                        && !args.get_bool("overwrite").unwrap_or(false)
-                    {
-                        bail!(@InvalidState "file already exists");
-                    }
 
                     let content = if let Ok(url) = args.get_str("url") {
                         let resp = reqwest::get(url).await.and_then(|it| it.error_for_status());
@@ -100,19 +91,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     };
                     let url = client.put(content, filename).await?;
 
-                    // use internal session to store file tag
-                    let old_identity = session.replace_internal();
-                    let result = session
-                        .update_object(
-                            id,
-                            iter::once((format!("@file:{variant}"), Some(url))).collect(),
-                            false,
-                        )
-                        .await;
-                    session.replace_identity(old_identity);
-                    result?;
-
-                    Ok(JsonMap::default())
+                    Ok([("url".to_owned(), url.into())].into_iter().collect())
                 })
             })
         },
@@ -120,14 +99,52 @@ pub async fn init(novi: &Novi) -> Result<()> {
     )
     .await?;
     novi.register_function(
+        "file.put".to_owned(),
+        Arc::new(move |session, args: &JsonMap| {
+            Box::pin(async move {
+                session.identity.check_perm("file.put")?;
+                session.call_function("file.put.impl", args).await
+            })
+        }),
+        false,
+    )
+    .await?;
+
+    novi.register_function(
         "file.store".to_owned(),
         Arc::new(move |session, args: &JsonMap| {
             Box::pin(async move {
+                let id = args.get_id("id")?;
                 let variant = args.get_str("variant").unwrap_or("original");
                 session
                     .identity
                     .check_perm(&format!("file.store:{variant}"))?;
-                session.call_function("file.store.impl", args).await
+
+                let object = session.get_object(id, true).await?;
+                if object.get_file(variant).is_ok() && !args.get_bool("overwrite").unwrap_or(false)
+                {
+                    bail!(@InvalidState "file already exists");
+                }
+
+                let old_identity = session.replace_internal();
+                let result = async {
+                    let result = session.call_function("file.put", args).await?;
+                    let url = result.get_str("url")?;
+                    session
+                        .update_object(
+                            id,
+                            [(format!("file:{variant}"), Some(url.to_owned()))]
+                                .into_iter()
+                                .collect(),
+                            false,
+                        )
+                        .await
+                }
+                .await;
+                session.replace_identity(old_identity);
+                result?;
+
+                Ok(JsonMap::default())
             })
         }),
         false,

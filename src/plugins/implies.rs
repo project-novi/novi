@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, iter, str::FromStr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, str::FromStr, sync::Arc};
 use tokio::sync::RwLock;
 use tokio_postgres::types::Type;
 use tracing::info;
@@ -330,7 +330,9 @@ async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Resul
                         .apply_new_imply(session, &imply)
                         .await?;
 
-                    Ok(iter::once(("affected".to_owned(), affected.into())).collect())
+                    Ok([("affected".to_owned(), affected.into())]
+                        .into_iter()
+                        .collect())
                 })
             })
         },

@@ -10,7 +10,7 @@ pub type Tags = HashMap<String, Option<String>>;
 pub type TagDict = BTreeMap<String, TagValue>;
 
 pub fn valid_nonspace_tag_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == ':' || c == '·' || c == '.' || c == '：'
+    c.is_alphanumeric() || c == '_' || c == ':' || c == '·' || c == '.' || c == '：' || c == '\''
 }
 
 pub fn valid_tag_char(c: char) -> bool {

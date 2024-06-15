@@ -18,8 +18,8 @@ async fn get_children(session: &mut Session, id: Uuid) -> Result<Vec<Object>> {
     session
         .query(
             Filter::Atom {
-                tag: "@parent".to_owned(),
-                kind: FilterKind::Equals(id.to_string(), true),
+                tag: format!("@group:{id}"),
+                kind: FilterKind::Has,
                 prefix: false,
             },
             QueryOptions::default(),
@@ -54,7 +54,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                 let keep_self = args.get_bool("keep_self").unwrap_or_default();
 
                 let children = get_children(session, id).await?;
-                let mut tags_to_delete = vec!["@parent".to_owned()];
+                let mut tags_to_delete = vec![format!("@group:{id}")];
                 if !keep_hidden {
                     tags_to_delete.push("@hidden".to_owned());
                 }

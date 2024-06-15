@@ -128,21 +128,19 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     bail!(@InvalidState "file already exists");
                 }
 
+                let result = session.call_function("file.put", args).await?;
+                let url = result.get_str("url")?;
+
                 let old_identity = session.replace_internal();
-                let result = async {
-                    let result = session.call_function("file.put", args).await?;
-                    let url = result.get_str("url")?;
-                    session
-                        .update_object(
-                            id,
-                            [(format!("file:{variant}"), Some(url.to_owned()))]
-                                .into_iter()
-                                .collect(),
-                            false,
-                        )
-                        .await
-                }
-                .await;
+                let result = session
+                    .update_object(
+                        id,
+                        [(format!("file:{variant}"), Some(url.to_owned()))]
+                            .into_iter()
+                            .collect(),
+                        false,
+                    )
+                    .await;
                 session.replace_identity(old_identity);
                 result?;
 

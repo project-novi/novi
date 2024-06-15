@@ -1,11 +1,15 @@
-use reqwest::{multipart::{Form, Part}, Client};
-use tokio::fs::File;
-use std::path::PathBuf;
+use reqwest::{
+    multipart::{Form, Part},
+    Client,
+};
 use serde::Deserialize;
+use std::path::PathBuf;
+use tokio::fs::File;
 
 use crate::{anyhow, Result};
 
 pub enum StorageContent {
+    Local(String),
     Response(reqwest::Response),
     File(PathBuf),
 }
@@ -24,12 +28,11 @@ impl IpfsClient {
         Self { url }
     }
 
-    pub async fn put(
-        &self,
-        content: StorageContent,
-        filename: Option<String>,
-    ) -> Result<String> {
+    pub async fn put(&self, content: StorageContent, filename: Option<String>) -> Result<String> {
         let mut file_part = match content {
+            StorageContent::Local(url) => {
+                return Ok(url);
+            }
             StorageContent::Response(resp) => Part::stream(resp),
             StorageContent::File(path) => Part::stream(
                 File::open(&path)

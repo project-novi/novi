@@ -77,7 +77,9 @@ pub async fn init(novi: &Novi) -> Result<()> {
                         bail!(@InvalidArgument "invalid storage")
                     };
 
-                    let content = if let Ok(url) = args.get_str("url") {
+                    let content = if let Ok(url) = args.get_str("local") {
+                        StorageContent::Local(url.to_owned())
+                    } else if let Ok(url) = args.get_str("url") {
                         let resp = reqwest::get(url).await.and_then(|it| it.error_for_status());
                         let resp = match resp {
                             Ok(resp) => resp,

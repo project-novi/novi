@@ -68,7 +68,7 @@ pub struct Session {
     pending_events: Vec<Event>,
 }
 impl Session {
-    pub(crate) async fn transaction(
+    pub(crate) async fn new(
         novi: Novi,
         identity: Arc<Identity>,
         mode: SessionMode,

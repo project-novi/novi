@@ -222,7 +222,7 @@ impl Novi {
             }
         };
         let (tx, rx) = oneshot::channel();
-        let Some(sender) = self.session_store.get(&token) else {
+        let Some(sender) = self.session_store.get(&token).map(|it| it.clone()) else {
             bail!(@InvalidCredentials "invalid session");
         };
         let result = sender
@@ -234,17 +234,18 @@ impl Novi {
                 })
             })))
             .await;
-        if handle.is_some() {
-            // release temporary session
-            let _ = sender.send(SessionCommand::End { commit: true }).await;
-        }
-        drop(sender);
 
         if result.is_err() {
             bail!(@IOError "failed to submit");
         }
         let result = match rx.await {
-            Ok(result) => tonic::Response::new(result?),
+            Ok(result) => {
+                if handle.is_some() {
+                    // release temporary session
+                    let _ = sender.send(SessionCommand::End { commit: result.is_ok() }).await;
+                }
+                tonic::Response::new(result?)
+            }
             Err(_) => bail!(@IOError "session closed"),
         };
 
@@ -256,11 +257,11 @@ impl Novi {
     }
 
     pub(crate) async fn guest_session(&self, mode: SessionMode) -> Result<Session> {
-        Session::transaction(self.clone(), self.guest_identity.clone(), mode).await
+        Session::new(self.clone(), self.guest_identity.clone(), mode).await
     }
 
     pub(crate) async fn internal_session(&self, mode: SessionMode) -> Result<Session> {
-        Session::transaction(self.clone(), self.internal_identity.clone(), mode).await
+        Session::new(self.clone(), self.internal_identity.clone(), mode).await
     }
 
     pub async fn new_session(&self, mode: SessionMode) -> Result<(SessionToken, JoinHandle<()>)> {

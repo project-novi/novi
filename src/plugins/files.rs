@@ -135,7 +135,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                 let result = session
                     .update_object(
                         id,
-                        [(format!("file:{variant}"), Some(url.to_owned()))]
+                        [(format!("@file:{variant}"), Some(url.to_owned()))]
                             .into_iter()
                             .collect(),
                         false,

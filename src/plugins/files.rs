@@ -49,6 +49,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                         ("depth_limit".to_owned(), (depth_limit - 1).into()),
                         ("id".to_owned(), id.to_string().into()),
                         ("variant".to_owned(), variant.to_owned().into()),
+                        ("allow_invalid".to_owned(), allow_invalid.into()),
                     ]
                     .into_iter()
                     .collect();

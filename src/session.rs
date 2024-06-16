@@ -23,7 +23,7 @@ use crate::{
     object::Object,
     proto::{query_request::Order, reg_core_hook_request::HookPoint, EventKind, SessionMode},
     query::args_to_ref,
-    subscribe::{DispatchWorkerCommand, Event, SubscribeCallback, SubscribeOptions, Subscriber},
+    subscribe::{subscriber_task, Event, SubscribeCallback, SubscribeOptions, Subscriber},
     tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags},
     token::SessionToken,
     Result,
@@ -591,21 +591,19 @@ impl Session {
         } else {
             (Vec::new(), Utc::now())
         };
-        self.novi
-            .dispatch_tx
-            .send(DispatchWorkerCommand::NewSub(
-                Subscriber {
-                    alive: alive.clone(),
-                    filter,
-                    identity: self.identity.clone(),
-                    accept_kinds,
-                    callback: Box::new(callback),
-                },
-                objects,
-                ckpt,
-            ))
-            .await
-            .map_err(|_| anyhow!(@IOError "dispatcher disconnected"))?;
+        tokio::spawn(subscriber_task(
+            self.novi.clone(),
+            Subscriber {
+                alive,
+                filter,
+                identity: self.identity.clone(),
+                accept_kinds,
+                callback,
+            },
+            objects,
+            ckpt,
+            self.novi.dispatch_tx.subscribe(),
+        ));
         Ok(())
     }
 

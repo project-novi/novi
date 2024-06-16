@@ -5,7 +5,7 @@ use deadpool::managed::Pool;
 use redis::AsyncCommands;
 use std::{collections::HashSet, ops::Deref, str::FromStr, sync::Arc};
 use tokio::{
-    sync::{mpsc, oneshot, RwLock},
+    sync::{broadcast, mpsc, oneshot, RwLock},
     task::JoinHandle,
 };
 use tokio_postgres::{types::Type, NoTls};
@@ -23,7 +23,7 @@ use crate::{
     proto::{reg_core_hook_request::HookPoint, SessionMode},
     rpc::RpcResult,
     session::{Session, SessionCommand, SessionStore},
-    subscribe::{DispatchWorkerCommand, Event},
+    subscribe::Event,
     token::{IdentityToken, SessionToken},
     user::{User, UserRef, INTERNAL_USER},
     Config, Result,
@@ -39,7 +39,7 @@ pub struct Inner {
     pub session_store: SessionStore,
     pub core_hooks: RwLock<[Vec<(Filter, CoreHookCallback)>; HOOK_POINT_COUNT]>,
     pub functions: DashMap<String, FunctionRegistry>,
-    pub dispatch_tx: mpsc::Sender<DispatchWorkerCommand>,
+    pub dispatch_tx: broadcast::Sender<Event>,
     pub guest_user: Arc<User>,
     pub guest_identity: Arc<Identity>,
     pub internal_identity: Arc<Identity>,
@@ -170,7 +170,7 @@ impl Novi {
             None,
         ));
 
-        let (dispatch_tx, dispatch_rx) = mpsc::channel(1024);
+        let (dispatch_tx, _) = broadcast::channel(1024);
         let inner = Arc::new(Inner {
             config,
             session_store: SessionStore::default(),
@@ -185,11 +185,6 @@ impl Novi {
             redis_pool,
         });
         let result = Self(inner);
-
-        tokio::spawn(crate::subscribe::dispatch_worker(
-            result.clone(),
-            dispatch_rx,
-        ));
 
         plugins::files::init(&result).await?;
         plugins::group::init(&result).await?;
@@ -242,7 +237,11 @@ impl Novi {
             Ok(result) => {
                 if handle.is_some() {
                     // release temporary session
-                    let _ = sender.send(SessionCommand::End { commit: result.is_ok() }).await;
+                    let _ = sender
+                        .send(SessionCommand::End {
+                            commit: result.is_ok(),
+                        })
+                        .await;
                 }
                 tonic::Response::new(result?)
             }
@@ -359,13 +358,7 @@ impl Novi {
     }
 
     pub(crate) async fn dispatch_event(&self, event: Event) {
-        if let Err(err) = self
-            .dispatch_tx
-            .send(DispatchWorkerCommand::Event(event))
-            .await
-        {
-            warn!(?err, "dispatcher disconnected");
-        }
+        let _ = self.dispatch_tx.send(event);
     }
 }
 

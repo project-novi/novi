@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use futures::stream::FuturesUnordered;
 use std::{
     collections::BTreeSet,
     sync::{
@@ -7,9 +6,8 @@ use std::{
         Arc,
     },
 };
-use tokio::sync::mpsc;
-use tokio_stream::StreamExt;
-use tracing::{debug, error};
+use tokio::sync::broadcast;
+use tracing::error;
 
 use crate::{
     bail,
@@ -45,6 +43,7 @@ impl Default for SubscribeOptions {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Event {
     pub kind: EventKind,
     pub object: Object,
@@ -59,100 +58,80 @@ pub(crate) struct Subscriber {
     pub callback: SubscribeCallback,
 }
 
-pub(crate) enum DispatchWorkerCommand {
-    Event(Event),
-    NewSub(Subscriber, Vec<Object>, DateTime<Utc>),
-}
+pub async fn subscriber_task(
+    novi: Novi,
+    mut sub: Subscriber,
+    objects: Vec<Object>,
+    ckpt: DateTime<Utc>,
+    mut rx: broadcast::Receiver<Event>,
+) {
+    for object in objects {
+        let kind = if object.created >= ckpt {
+            EventKind::Create
+        } else {
+            EventKind::Update
+        };
+        if sub.accept_kinds & (1 << kind as u8) == 0 {
+            continue;
+        }
+        (sub.callback)(SubscribeArgs {
+            object: &object,
+            kind,
+        })
+        .await;
+    }
 
-pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchWorkerCommand>) {
-    let mut subscribers = Vec::new();
-    while let Some(obj) = rx.recv().await {
-        match obj {
-            DispatchWorkerCommand::NewSub(mut sub, objects, ckpt) => {
-                for object in objects {
-                    let kind = if object.created >= ckpt {
-                        EventKind::Create
-                    } else {
-                        EventKind::Update
-                    };
-                    if sub.accept_kinds & (1 << kind as u8) == 0 {
-                        continue;
-                    }
-                    (sub.callback)(SubscribeArgs {
-                        object: &object,
-                        kind,
-                    })
-                    .await;
-                }
-                subscribers.push(sub);
+    while let Ok(Event {
+        kind,
+        object,
+        deleted_tags,
+    }) = rx.recv().await
+    {
+        if !sub.alive.load(Ordering::Relaxed) {
+            break;
+        }
+
+        if sub.accept_kinds & (1 << kind as u8) == 0
+            || !sub.filter.matches(&object, &deleted_tags)
+            || sub
+                .identity
+                .check_access(&object, AccessKind::View)
+                .is_err()
+        {
+            continue;
+        }
+
+        // Run the BeforeView hooks manually since we're not in a session
+        let hooks = novi.core_hooks.read().await;
+        for (filter, f) in &hooks[HookPoint::BeforeView as usize] {
+            if !filter.matches(&object, &Default::default()) {
+                continue;
             }
-            DispatchWorkerCommand::Event(Event {
-                kind,
-                object,
-                deleted_tags,
-            }) => {
-                let id = object.id;
-                debug!(object = %id, ?kind, "dispatch event");
-                let mut i = 0;
-                while i < subscribers.len() {
-                    let sub = &mut subscribers[i];
-                    if !sub.alive.load(Ordering::Relaxed) {
-                        subscribers.swap_remove(i);
-                    } else {
-                        i += 1;
-                    }
+
+            let result: Result<()> = async {
+                let edits = f(CoreHookArgs {
+                    object: &object,
+                    old_object: None,
+                    session: Err(&sub.identity),
+                })
+                .await?;
+                if !edits.is_empty() {
+                    bail!(@InvalidArgument "hook must not modify object");
                 }
-
-                let mut futs = FuturesUnordered::new();
-                for sub in &mut subscribers {
-                    if sub.accept_kinds & (1 << kind as u8) == 0
-                        || !sub.filter.matches(&object, &deleted_tags)
-                        || sub
-                            .identity
-                            .check_access(&object, AccessKind::View)
-                            .is_err()
-                    {
-                        continue;
-                    }
-
-                    futs.push(async {
-                        // Run the BeforeView hooks manually since we're not in a session
-                        let hooks = novi.core_hooks.read().await;
-                        for (filter, f) in &hooks[HookPoint::BeforeView as usize] {
-                            if !filter.matches(&object, &Default::default()) {
-                                continue;
-                            }
-
-                            let result: Result<()> = async {
-                                let edits = f(CoreHookArgs {
-                                    object: &object,
-                                    old_object: None,
-                                    session: Err(&sub.identity),
-                                })
-                                .await?;
-                                if !edits.is_empty() {
-                                    bail!(@InvalidArgument "hook must not modify object");
-                                }
-                                Ok(())
-                            }
-                            .await;
-                            if let Err(err) = result {
-                                error!(?err, "failed to run hook");
-                                continue;
-                            }
-                        }
-                        drop(hooks);
-
-                        (sub.callback)(SubscribeArgs {
-                            object: &object,
-                            kind,
-                        })
-                        .await;
-                    });
-                }
-
-                while let Some(_) = futs.next().await {}
+                Ok(())
+            }
+            .await;
+            if let Err(err) = result {
+                error!(?err, "failed to run hook");
+                continue;
             }
         }
+        drop(hooks);
+
+        (sub.callback)(SubscribeArgs {
+            object: &object,
+            kind,
+        })
+        .await;
     }
 }

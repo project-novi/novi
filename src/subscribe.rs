@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use futures::stream::FuturesUnordered;
 use std::{
     collections::BTreeSet,
     sync::{
@@ -7,6 +8,7 @@ use std::{
     },
 };
 use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
 use tracing::{debug, error};
 
 use crate::{
@@ -82,12 +84,20 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                     let sub = &mut subscribers[i];
                     if !sub.alive.load(Ordering::Relaxed) {
                         subscribers.swap_remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+
+                let mut futs = FuturesUnordered::new();
+                for sub in &mut subscribers {
+                    if sub.accept_kinds & (1 << kind as u8) == 0
+                        || !sub.filter.matches(&object, &deleted_tags)
+                    {
                         continue;
                     }
-                    i += 1;
-                    if sub.accept_kinds & (1 << kind as u8) != 0
-                        && sub.filter.matches(&object, &deleted_tags)
-                    {
+
+                    futs.push(async {
                         // Run the BeforeView hooks manually since we're not in a session
                         let hooks = novi.core_hooks.read().await;
                         for (filter, f) in &hooks[HookPoint::BeforeView as usize] {
@@ -121,8 +131,10 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                             session: None,
                         })
                         .await;
-                    }
+                    });
                 }
+
+                while let Some(_) = futs.next().await {}
             }
         }
     }

@@ -19,6 +19,7 @@ dashmap = "5.5.3"
 deadpool = "0.12.1"
 deadpool-postgres = { version = "0.13.2", features = ["serde"] }
 deadpool-redis = { version = "0.15.1", features = ["rt_tokio_1", "serde"] }
+futures = "0.3.30"
 nom = "7.1.3"
 once_cell = "1.19.0"
 prost = "0.12.6"

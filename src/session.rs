@@ -609,10 +609,10 @@ impl Session {
 
     pub async fn call_function(&mut self, name: &str, arguments: &JsonMap) -> Result<JsonMap> {
         let novi = self.novi.clone();
-        let Some(reg) = novi.functions.get(name) else {
+        let Some(function) = novi.functions.get(name).map(|it| it.function.clone()) else {
             bail!(@FunctionNotFound "function not found")
         };
 
-        (reg.function)(self, arguments).await
+        function(self, arguments).await
     }
 }

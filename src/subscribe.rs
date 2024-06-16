@@ -20,7 +20,7 @@ use crate::{
     novi::Novi,
     object::Object,
     proto::{reg_core_hook_request::HookPoint, EventKind},
-    session::Session,
+    session::{AccessKind, Session},
     Result,
 };
 
@@ -93,6 +93,7 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                 for sub in &mut subscribers {
                     if sub.accept_kinds & (1 << kind as u8) == 0
                         || !sub.filter.matches(&object, &deleted_tags)
+                        || sub.identity.check_access(&object, AccessKind::View).is_err()
                     {
                         continue;
                     }

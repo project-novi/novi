@@ -6,11 +6,7 @@ use serde_json::json;
 use std::{collections::HashSet, sync::Arc};
 
 use crate::{
-    anyhow, bail,
-    novi::Novi,
-    token::IdentityToken,
-    user::{User, UserRef},
-    Result,
+    anyhow, bail, novi::Novi, object::Object, session::AccessKind, token::IdentityToken, user::{User, UserRef}, Result
 };
 
 pub const EXPIRATION_SECS: u64 = 60 * 60 * 24 * 7; // 1 week
@@ -138,5 +134,33 @@ impl Identity {
         let token = IdentityToken::new();
         IDENTITIES.insert(token.clone(), self);
         token
+    }
+
+    pub fn check_access(&self, object: &Object, access: AccessKind) -> Result<()> {
+        if object.creator.is_some() && object.creator == self.user.load().id {
+            return Ok(()); // creator has all permissions
+        }
+
+        if access != AccessKind::View {
+            for (req, _) in object.subtags("@access.view") {
+                self.check_perm(req).ok();
+                if !self.has_perm(req) {
+                    bail!(@PermissionDenied "access denied");
+                }
+            }
+        }
+
+        let prefix = match access {
+            AccessKind::View => "@access.view",
+            AccessKind::Edit => "@access.edit",
+            AccessKind::Delete => "@access.delete",
+        };
+        for (req, _) in object.subtags(prefix) {
+            if !self.has_perm(req) {
+                bail!(@PermissionDenied "access denied");
+            }
+        }
+
+        Ok(())
     }
 }

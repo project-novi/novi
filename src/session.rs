@@ -329,34 +329,6 @@ impl Session {
         Ok(())
     }
 
-    fn check_access(&self, object: &Object, access: AccessKind) -> Result<()> {
-        if object.creator.is_some() && object.creator == self.identity.user.load().id {
-            return Ok(()); // creator has all permissions
-        }
-
-        if access != AccessKind::View {
-            for (req, _) in object.subtags("@access.view") {
-                self.identity.check_perm(req).ok();
-                if !self.identity.has_perm(req) {
-                    bail!(@PermissionDenied "access denied");
-                }
-            }
-        }
-
-        let prefix = match access {
-            AccessKind::View => "@access.view",
-            AccessKind::Edit => "@access.edit",
-            AccessKind::Delete => "@access.delete",
-        };
-        for (req, _) in object.subtags(prefix) {
-            if !self.identity.has_perm(req) {
-                bail!(@PermissionDenied "access denied");
-            }
-        }
-
-        Ok(())
-    }
-
     async fn prepare_stmt(
         &self,
         sql: &str,
@@ -459,7 +431,7 @@ impl Session {
         };
 
         let object = Object::from_row(row)?;
-        self.check_access(&object, AccessKind::View)?;
+        self.identity.check_access(&object, AccessKind::View)?;
         Ok(object)
     }
 
@@ -477,7 +449,7 @@ impl Session {
         debug!(%id, "update object");
 
         let mut object = self.get_object_inner(id, true).await?;
-        self.check_access(&object, AccessKind::Edit)?;
+        self.identity.check_access(&object, AccessKind::Edit)?;
         let old_object = object.clone();
 
         if !object.update(tags, force) {
@@ -503,7 +475,7 @@ impl Session {
         debug!(%id, "replace object");
 
         let mut object = self.get_object_inner(id, true).await?;
-        self.check_access(&object, AccessKind::Edit)?;
+        self.identity.check_access(&object, AccessKind::Edit)?;
         let old_object = object.clone();
 
         let Some(deleted_tags) = object.replace(tags, scopes, force) else {
@@ -526,7 +498,7 @@ impl Session {
         debug!(%id, "delete object tags");
 
         let mut object = self.get_object_inner(id, true).await?;
-        self.check_access(&object, AccessKind::Edit)?;
+        self.identity.check_access(&object, AccessKind::Edit)?;
         let old_object = object.clone();
 
         let deleted_tags = object.delete_tags(tags);
@@ -546,7 +518,7 @@ impl Session {
         debug!(%id, "delete object");
 
         let mut object = self.get_object_inner(id, true).await?;
-        self.check_access(&object, AccessKind::Delete)?;
+        self.identity.check_access(&object, AccessKind::Delete)?;
         self.run_hook(
             HookPoint::BeforeDelete,
             true,

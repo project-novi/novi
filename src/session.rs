@@ -1,3 +1,4 @@
+use chrono::Utc;
 use dashmap::DashMap;
 use deadpool_postgres::Transaction;
 use std::{
@@ -22,10 +23,7 @@ use crate::{
     object::Object,
     proto::{query_request::Order, reg_core_hook_request::HookPoint, EventKind, SessionMode},
     query::args_to_ref,
-    subscribe::{
-        DispatchWorkerCommand, Event, SubscribeArgs, SubscribeCallback, SubscribeOptions,
-        Subscriber,
-    },
+    subscribe::{DispatchWorkerCommand, Event, SubscribeCallback, SubscribeOptions, Subscriber},
     tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags},
     token::SessionToken,
     Result,
@@ -568,14 +566,18 @@ impl Session {
         filter: Filter,
         mut options: SubscribeOptions,
         alive: Arc<AtomicBool>,
-        mut callback: SubscribeCallback,
+        callback: SubscribeCallback,
     ) -> Result<()> {
         self.identity.check_perm("subscribe")?;
 
         info!("new subscriber");
-        if let Some(ckpt) = options.checkpoint {
-            let objects = self
-                .query(
+        let mut accept_kinds = 0u8;
+        for kind in std::mem::take(&mut options.accept_kinds) {
+            accept_kinds |= 1 << kind as u8;
+        }
+        let (objects, ckpt) = if let Some(ckpt) = options.checkpoint {
+            (
+                self.query(
                     filter.clone(),
                     QueryOptions {
                         checkpoint: Some(ckpt),
@@ -583,33 +585,25 @@ impl Session {
                         ..Default::default()
                     },
                 )
-                .await?;
-            for object in objects {
-                callback(SubscribeArgs {
-                    object: &object,
-                    kind: if object.created >= ckpt {
-                        EventKind::Create
-                    } else {
-                        EventKind::Update
-                    },
-                    session: Some(self),
-                })
-                .await;
-            }
-        }
-        let mut accept_kinds = 0u8;
-        for kind in std::mem::take(&mut options.accept_kinds) {
-            accept_kinds |= 1 << kind as u8;
-        }
+                .await?,
+                ckpt,
+            )
+        } else {
+            (Vec::new(), Utc::now())
+        };
         self.novi
             .dispatch_tx
-            .send(DispatchWorkerCommand::NewSub(Subscriber {
-                alive: alive.clone(),
-                filter,
-                identity: self.identity.clone(),
-                accept_kinds,
-                callback: Box::new(callback),
-            }))
+            .send(DispatchWorkerCommand::NewSub(
+                Subscriber {
+                    alive: alive.clone(),
+                    filter,
+                    identity: self.identity.clone(),
+                    accept_kinds,
+                    callback: Box::new(callback),
+                },
+                objects,
+                ckpt,
+            ))
             .await
             .map_err(|_| anyhow!(@IOError "dispatcher disconnected"))?;
         Ok(())

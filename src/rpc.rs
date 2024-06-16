@@ -348,24 +348,10 @@ impl proto::novi_server::Novi for RpcFacade {
                                     let pb = proto::SubscribeReply {
                                         object: Some(args.object.clone().into()),
                                         kind: args.kind.into(),
-                                        session: args
-                                            .session
-                                            .as_ref()
-                                            .map(|it| it.token().to_string()),
                                     };
-                                    let fut = async move {
-                                        if tx.send(Ok(pb)).await.is_err() {
-                                            debug!("subscriber disconnected");
-                                            alive.store(false, Ordering::Relaxed);
-                                        }
-                                        Ok(())
-                                    };
-                                    if let Some(session) = args.session {
-                                        if let Err(err) = session.yield_self(fut).await {
-                                            warn!(?err, "failed to yield");
-                                        }
-                                    } else {
-                                        let _ = fut.await;
+                                    if tx.send(Ok(pb)).await.is_err() {
+                                        debug!("subscriber disconnected");
+                                        alive.store(false, Ordering::Relaxed);
                                     }
                                 })
                             }),

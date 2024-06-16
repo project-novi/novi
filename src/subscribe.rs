@@ -20,7 +20,7 @@ use crate::{
     novi::Novi,
     object::Object,
     proto::{reg_core_hook_request::HookPoint, EventKind},
-    session::{AccessKind, Session},
+    session::AccessKind,
     Result,
 };
 
@@ -30,7 +30,6 @@ pub type SubscribeCallback =
 pub struct SubscribeArgs<'a> {
     pub object: &'a Object,
     pub kind: EventKind,
-    pub session: Option<&'a mut Session>,
 }
 
 pub struct SubscribeOptions {
@@ -62,14 +61,29 @@ pub(crate) struct Subscriber {
 
 pub(crate) enum DispatchWorkerCommand {
     Event(Event),
-    NewSub(Subscriber),
+    NewSub(Subscriber, Vec<Object>, DateTime<Utc>),
 }
 
 pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchWorkerCommand>) {
     let mut subscribers = Vec::new();
     while let Some(obj) = rx.recv().await {
         match obj {
-            DispatchWorkerCommand::NewSub(sub) => {
+            DispatchWorkerCommand::NewSub(mut sub, objects, ckpt) => {
+                for object in objects {
+                    let kind = if object.created >= ckpt {
+                        EventKind::Create
+                    } else {
+                        EventKind::Update
+                    };
+                    if sub.accept_kinds & (1 << kind as u8) == 0 {
+                        continue;
+                    }
+                    (sub.callback)(SubscribeArgs {
+                        object: &object,
+                        kind,
+                    })
+                    .await;
+                }
                 subscribers.push(sub);
             }
             DispatchWorkerCommand::Event(Event {
@@ -93,7 +107,10 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                 for sub in &mut subscribers {
                     if sub.accept_kinds & (1 << kind as u8) == 0
                         || !sub.filter.matches(&object, &deleted_tags)
-                        || sub.identity.check_access(&object, AccessKind::View).is_err()
+                        || sub
+                            .identity
+                            .check_access(&object, AccessKind::View)
+                            .is_err()
                     {
                         continue;
                     }
@@ -129,7 +146,6 @@ pub(crate) async fn dispatch_worker(novi: Novi, mut rx: mpsc::Receiver<DispatchW
                         (sub.callback)(SubscribeArgs {
                             object: &object,
                             kind,
-                            session: None,
                         })
                         .await;
                     });

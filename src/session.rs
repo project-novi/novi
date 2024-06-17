@@ -429,7 +429,7 @@ impl Session {
         let row = self.connection.query_opt(&sql, &[&id]).await?;
         let row = match row {
             Some(row) => row,
-            None => bail!(@ObjectNotFound ("id" => id.to_string()) "object {id} not found"),
+            None => bail!(@ObjectNotFound ("id" => id.to_string())),
         };
 
         let object = Object::from_row(row)?;

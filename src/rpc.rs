@@ -149,9 +149,14 @@ impl proto::novi_server::Novi for RpcFacade {
         let Some((_, tx)) = self.0.session_store.remove(&token) else {
             bail!(@InvalidCredentials "invalid session");
         };
-        tx.send(SessionCommand::End { commit: req.commit })
-            .await
-            .map_err(|_| anyhow!("failed to end session"))?;
+        let (end_tx, end_rx) = oneshot::channel::<()>();
+        tx.send(SessionCommand::End {
+            commit: req.commit,
+            notify: Some(end_tx),
+        })
+        .await
+        .map_err(|_| anyhow!("failed to end session"))?;
+        end_rx.await.map_err(|_| anyhow!("failed to end session"))?;
         Ok(Response::new(proto::EndSessionReply {}))
     }
 

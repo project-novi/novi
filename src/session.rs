@@ -35,7 +35,10 @@ pub type SessionAction = Box<dyn for<'a> FnOnce(&'a mut Session) -> BoxFuture<'a
 
 pub(crate) enum SessionCommand {
     Action(SessionAction),
-    End { commit: bool },
+    End {
+        commit: bool,
+        notify: Option<oneshot::Sender<()>>,
+    },
 }
 pub type SessionStore = DashMap<SessionToken, mpsc::Sender<SessionCommand>>;
 
@@ -156,7 +159,7 @@ impl Session {
                     warn!("session closed unexpectedly");
                     return;
                 };
-                let Ok(_) = sender.send(SessionCommand::End { commit: false }).await else {
+                let Ok(_) = sender.send(SessionCommand::End { commit: false, notify: None }).await else {
                     warn!("session closed unexpectedly");
                     return;
                 };

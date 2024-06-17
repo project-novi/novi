@@ -240,6 +240,7 @@ impl Novi {
                     let _ = sender
                         .send(SessionCommand::End {
                             commit: result.is_ok(),
+                            notify: None,
                         })
                         .await;
                     drop(sender);
@@ -274,9 +275,12 @@ impl Novi {
             while let Some(action) = rx.recv().await {
                 match action {
                     SessionCommand::Action(action) => action(&mut session).await,
-                    SessionCommand::End { commit } => {
+                    SessionCommand::End { commit, notify } => {
                         if let Err(err) = session.end(commit).await {
                             warn!(?err, "failed to end session");
+                        }
+                        if let Some(notify) = notify {
+                            notify.send(()).ok();
                         }
                         break;
                     }

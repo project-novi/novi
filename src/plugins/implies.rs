@@ -357,7 +357,7 @@ async fn add_imply_function(novi: &Novi, implies: Arc<RwLock<Implies>>) -> Resul
 }
 
 pub async fn init(novi: &Novi) -> Result<()> {
-    let mut session = novi.internal_session(SessionMode::Auto).await?;
+    let mut session = novi.internal_session(SessionMode::SessionAuto).await?;
     let imply_objs = session
         .query("@imply".parse()?, QueryOptions::default())
         .await?;

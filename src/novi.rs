@@ -20,7 +20,7 @@ use crate::{
     identity::Identity,
     misc::BoxFuture,
     plugins,
-    proto::{reg_core_hook_request::HookPoint, SessionMode},
+    proto::{reg_core_hook_request::HookPoint, ObjectLock, SessionMode},
     rpc::RpcResult,
     session::{Session, SessionCommand, SessionStore},
     subscribe::Event,
@@ -212,7 +212,7 @@ impl Novi {
             None => {
                 // run in a temporary new session
                 // TODO: Is it possible that the this break the consistency?
-                let (token, handle) = self.new_session(SessionMode::Auto).await?;
+                let (token, handle) = self.new_session(SessionMode::SessionAuto).await?;
                 (token, Some(handle))
             }
         };
@@ -297,8 +297,8 @@ impl Novi {
         if let Some(user) = users.get(&id) {
             return Ok(UserRef::clone(user));
         }
-        let mut session = self.internal_session(SessionMode::Immediate).await?;
-        let user = User::try_from(session.get_object_inner(id, true).await?)?;
+        let mut session = self.internal_session(SessionMode::SessionImmediate).await?;
+        let user = User::try_from(session.get_object_inner(id, ObjectLock::LockShare).await?)?;
         let user = Arc::new(ArcSwap::from_pointee(user));
 
         users.insert(id, user.clone());

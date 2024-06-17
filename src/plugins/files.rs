@@ -2,7 +2,9 @@ use std::{path::PathBuf, str::FromStr, sync::Arc};
 use url::Url;
 use uuid::Uuid;
 
-use crate::{anyhow, bail, function::JsonMap, ipfs::StorageContent, novi::Novi, Result};
+use crate::{
+    anyhow, bail, function::JsonMap, ipfs::StorageContent, novi::Novi, proto::ObjectLock, Result,
+};
 
 pub async fn init(novi: &Novi) -> Result<()> {
     novi.register_function(
@@ -24,7 +26,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     .collect())
                 };
 
-                let object = session.get_object(id, false).await?;
+                let object = session.get_object(id, ObjectLock::LockShare).await?;
                 let Ok(Some(url_str)) = object.get_file(variant) else {
                     if allow_invalid {
                         return to_result(None);
@@ -122,7 +124,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     .identity
                     .check_perm(&format!("file.store:{variant}"))?;
 
-                let object = session.get_object(id, true).await?;
+                let object = session.get_object(id, ObjectLock::LockShare).await?;
                 if object.get_file(variant).is_ok() && !args.get_bool("overwrite").unwrap_or(false)
                 {
                     bail!(@InvalidState "file already exists");

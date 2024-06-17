@@ -21,7 +21,9 @@ use crate::{
     misc::BoxFuture,
     novi::Novi,
     object::Object,
-    proto::{query_request::Order, reg_core_hook_request::HookPoint, EventKind, SessionMode},
+    proto::{
+        query_request::Order, reg_core_hook_request::HookPoint, EventKind, ObjectLock, SessionMode,
+    },
     query::args_to_ref,
     subscribe::{subscriber_task, Event, SubscribeCallback, SubscribeOptions, Subscriber},
     tag::{to_tag_dict, validate_tag_name, validate_tag_value, Tags},
@@ -73,18 +75,20 @@ impl Session {
     ) -> Result<Self> {
         let mut connection = Box::new(novi.pg_pool.get().await?);
         let txn = match mode {
-            SessionMode::Auto | SessionMode::ReadOnly | SessionMode::ReadWrite => {
+            SessionMode::SessionAuto
+            | SessionMode::SessionReadOnly
+            | SessionMode::SessionReadWrite => {
                 let txn = connection
                     .build_transaction()
-                    .read_only(mode == SessionMode::ReadOnly)
+                    .read_only(mode == SessionMode::SessionReadOnly)
                     .start()
                     .await?;
-                if mode == SessionMode::ReadWrite {
+                if mode == SessionMode::SessionReadWrite {
                     txn.execute("lock object in exclusive mode", &[]).await?;
                 }
                 Some(txn)
             }
-            SessionMode::Immediate => None,
+            SessionMode::SessionImmediate => None,
         };
         Ok(Self {
             novi,
@@ -127,7 +131,7 @@ impl Session {
     }
 
     pub(crate) fn require_mutable(&self) -> Result<()> {
-        if self.mode == SessionMode::ReadOnly {
+        if self.mode == SessionMode::SessionReadOnly {
             bail!(@InvalidArgument "performing mutation in read-only session");
         }
         Ok(())
@@ -321,7 +325,7 @@ impl Session {
             &deleted_tags,
         )
         .await?;
-        self.emit_event(EventKind::Update, object.clone(), deleted_tags)
+        self.emit_event(EventKind::EventUpdate, object.clone(), deleted_tags)
             .await;
 
         Ok(())
@@ -409,17 +413,17 @@ impl Session {
             &Default::default(),
         )
         .await?;
-        self.emit_event(EventKind::Create, object.clone(), Default::default())
+        self.emit_event(EventKind::EventCreate, object.clone(), Default::default())
             .await;
 
         self.return_object(object).await
     }
 
-    pub async fn get_object_inner(&mut self, id: Uuid, lock: bool) -> Result<Object> {
-        let sql = if lock {
-            "select * from object where id = $1 for no key update"
-        } else {
-            "select * from object where id = $1"
+    pub async fn get_object_inner(&mut self, id: Uuid, lock: ObjectLock) -> Result<Object> {
+        let sql = match lock {
+            ObjectLock::LockNone => "select * from object where id = $1",
+            ObjectLock::LockShare => "select * from object where id = $1 for share",
+            ObjectLock::LockExclusive => "select * from object where id = $1 for update",
         };
         let sql = self.prepare_stmt(sql, &[Type::UUID]).await?;
         let row = self.connection.query_opt(&sql, &[&id]).await?;
@@ -433,7 +437,7 @@ impl Session {
         Ok(object)
     }
 
-    pub async fn get_object(&mut self, id: Uuid, lock: bool) -> Result<Object> {
+    pub async fn get_object(&mut self, id: Uuid, lock: ObjectLock) -> Result<Object> {
         self.identity.check_perm("object.get")?;
         let object = self.get_object_inner(id, lock).await?;
         self.return_object(object).await
@@ -446,7 +450,7 @@ impl Session {
 
         debug!(%id, "update object");
 
-        let mut object = self.get_object_inner(id, true).await?;
+        let mut object = self.get_object_inner(id, ObjectLock::LockExclusive).await?;
         self.identity.check_access(&object, AccessKind::Edit)?;
         let old_object = object.clone();
 
@@ -472,7 +476,7 @@ impl Session {
 
         debug!(%id, "replace object");
 
-        let mut object = self.get_object_inner(id, true).await?;
+        let mut object = self.get_object_inner(id, ObjectLock::LockExclusive).await?;
         self.identity.check_access(&object, AccessKind::Edit)?;
         let old_object = object.clone();
 
@@ -495,7 +499,7 @@ impl Session {
 
         debug!(%id, "delete object tags");
 
-        let mut object = self.get_object_inner(id, true).await?;
+        let mut object = self.get_object_inner(id, ObjectLock::LockExclusive).await?;
         self.identity.check_access(&object, AccessKind::Edit)?;
         let old_object = object.clone();
 
@@ -515,7 +519,7 @@ impl Session {
 
         debug!(%id, "delete object");
 
-        let mut object = self.get_object_inner(id, true).await?;
+        let mut object = self.get_object_inner(id, ObjectLock::LockExclusive).await?;
         self.identity.check_access(&object, AccessKind::Delete)?;
         self.run_hook(
             HookPoint::BeforeDelete,
@@ -538,7 +542,7 @@ impl Session {
             &Default::default(),
         )
         .await?;
-        self.emit_event(EventKind::Delete, object, Default::default())
+        self.emit_event(EventKind::EventDelete, object, Default::default())
             .await;
 
         Ok(())

@@ -36,10 +36,16 @@ message Object {
 message Scopes { repeated string scopes = 1; }
 
 enum SessionMode {
-  AUTO = 0;
-  READ_ONLY = 1;
-  READ_WRITE = 2;
-  IMMEDIATE = 3;
+  SESSION_AUTO = 0;
+  SESSION_READ_ONLY = 1;
+  SESSION_READ_WRITE = 2;
+  SESSION_IMMEDIATE = 3;
+}
+
+enum ObjectLock {
+  LOCK_NONE = 0;
+  LOCK_SHARE = 1;
+  LOCK_EXCLUSIVE = 2;
 }
 
 service Novi {
@@ -102,7 +108,7 @@ message CreateObjectReply { Object object = 1; }
 
 message GetObjectRequest {
   UUID id = 1;
-  bool lock = 2;
+  ObjectLock lock = 2;
   optional string precondition = 3;
 }
 message GetObjectReply { Object object = 1; }
@@ -152,9 +158,9 @@ message QueryRequest {
 message QueryReply { repeated Object objects = 1; }
 
 enum EventKind {
-  CREATE = 0;
-  UPDATE = 1;
-  DELETE = 2;
+  EVENT_CREATE = 0;
+  EVENT_UPDATE = 1;
+  EVENT_DELETE = 2;
 }
 message SubscribeRequest {
   string filter = 1;

@@ -38,7 +38,7 @@ impl Default for SubscribeOptions {
     fn default() -> Self {
         Self {
             checkpoint: None,
-            accept_kinds: vec![EventKind::Create, EventKind::Update, EventKind::Delete],
+            accept_kinds: vec![EventKind::EventCreate, EventKind::EventUpdate],
         }
     }
 }
@@ -67,9 +67,9 @@ pub async fn subscriber_task(
 ) {
     for object in objects {
         let kind = if object.created >= ckpt {
-            EventKind::Create
+            EventKind::EventCreate
         } else {
-            EventKind::Update
+            EventKind::EventUpdate
         };
         if sub.accept_kinds & (1 << kind as u8) == 0 {
             continue;

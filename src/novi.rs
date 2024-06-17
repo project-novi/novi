@@ -242,6 +242,8 @@ impl Novi {
                             commit: result.is_ok(),
                         })
                         .await;
+                    drop(sender);
+                    self.session_store.remove(&token);
                 }
                 tonic::Response::new(result?)
             }

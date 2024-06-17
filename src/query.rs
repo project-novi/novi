@@ -1,6 +1,8 @@
 use std::fmt::{Debug, Write};
 use tokio_postgres::types::{ToSql, Type};
 
+use crate::proto::ObjectLock;
+
 pub type PgArguments = Vec<Box<dyn ToSql + Send + Sync>>;
 
 pub fn pg_pattern_escape(s: &str) -> String {
@@ -16,7 +18,7 @@ pub struct QueryBuilder {
     pub offset: Option<u32>,
     pub args: PgArguments,
     pub types: Vec<Type>,
-    pub lock: bool,
+    pub lock: ObjectLock,
 }
 
 impl QueryBuilder {
@@ -30,7 +32,7 @@ impl QueryBuilder {
             order: None,
             args: PgArguments::default(),
             types: Vec::new(),
-            lock: false,
+            lock: ObjectLock::LockShare,
         }
     }
 
@@ -78,8 +80,10 @@ impl QueryBuilder {
         if let Some(offset) = &self.offset {
             write!(res, " offset {offset}").unwrap();
         }
-        if self.lock {
-            res += " for no key update";
+        match self.lock {
+            ObjectLock::LockShare => res += " for share",
+            ObjectLock::LockExclusive => res += " for update",
+            ObjectLock::LockNone => {}
         }
 
         res

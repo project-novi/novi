@@ -8,7 +8,7 @@ use crate::{
     identity::Identity,
     misc::wrap_nom_from_str,
     object::Object,
-    proto::query_request::Order,
+    proto::{query_request::Order, ObjectLock},
     query::{pg_pattern_escape, PgArguments, QueryBuilder},
     tag, Error, Result,
 };
@@ -437,7 +437,7 @@ pub struct QueryOptions {
     pub updated_range: TimeRange,
     pub order: Order,
     pub limit: Option<u32>,
-    pub lock: bool,
+    pub lock: ObjectLock,
 }
 impl Default for QueryOptions {
     fn default() -> Self {
@@ -447,7 +447,7 @@ impl Default for QueryOptions {
             updated_range: TimeRange::default(),
             order: Order::CreatedDesc,
             limit: None,
-            lock: false,
+            lock: ObjectLock::LockShare,
         }
     }
 }

@@ -281,6 +281,7 @@ impl proto::novi_server::Novi for RpcFacade {
 
     async fn query(&self, req: Request<proto::QueryRequest>) -> RpcResult<proto::QueryReply> {
         let (_, ext, req) = req.into_parts();
+        let lock = ObjectLock::try_from(req.lock).unwrap_or(ObjectLock::LockShare);
         let filter: Filter = req.filter.parse()?;
         fn time_range(after: Option<i64>, before: Option<i64>) -> Result<TimeRange> {
             let after = after.map(utc_from_timestamp).transpose()?;
@@ -300,7 +301,7 @@ impl proto::novi_server::Novi for RpcFacade {
                                 order: Order::try_from(req.order)
                                     .map_err(|_| anyhow!(@InvalidArgument "invalid order"))?,
                                 limit: req.limit,
-                                lock: req.lock,
+                                lock,
                             },
                         )
                         .await?;

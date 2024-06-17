@@ -146,7 +146,7 @@ message QueryRequest {
   optional int64 created_before = 6;
   Order order = 7;
   optional uint32 limit = 8;
-  bool lock = 9;
+  ObjectLock lock = 9;
 
   enum Order {
     CREATED_DESC = 0;

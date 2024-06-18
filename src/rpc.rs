@@ -157,6 +157,7 @@ impl proto::novi_server::Novi for RpcFacade {
         .await
         .map_err(|_| anyhow!("failed to end session"))?;
         end_rx.await.map_err(|_| anyhow!("failed to end session"))?;
+        info!(%token, "end session");
         Ok(Response::new(proto::EndSessionReply {}))
     }
 
@@ -189,7 +190,9 @@ impl proto::novi_server::Novi for RpcFacade {
         self.0
             .submit(ext, move |session| {
                 Box::pin(async move {
+                    info!(token = %session.token, ?lock, "pre get object");
                     let object = session.get_object(required(req.id)?.into(), lock).await?;
+                    info!(token = %session.token, id = %object.id, ?lock, "get object");
                     if let Some(precondition) = precondition {
                         if !precondition.matches(&object, &Default::default()) {
                             bail!(@PreconditionFailed);

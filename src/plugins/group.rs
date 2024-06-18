@@ -50,8 +50,8 @@ pub async fn init(novi: &Novi) -> Result<()> {
         Arc::new(|session, args| {
             Box::pin(async move {
                 let id = args.get_id("id")?;
-                let keep_hidden = args.get_bool("keep_hidden").unwrap_or_default();
-                let keep_self = args.get_bool("keep_self").unwrap_or_default();
+                let keep_hidden = args.get_bool_opt("keep_hidden")?.unwrap_or_default();
+                let keep_self = args.get_bool_opt("keep_self")?.unwrap_or_default();
 
                 let children = get_children(session, id).await?;
                 let mut tags_to_delete = vec![format!("@group:{id}")];

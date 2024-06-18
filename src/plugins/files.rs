@@ -2,19 +2,18 @@ use std::{path::PathBuf, str::FromStr, sync::Arc};
 use url::Url;
 use uuid::Uuid;
 
-use crate::{
-    anyhow, bail, function::JsonMap, ipfs::StorageContent, novi::Novi, proto::ObjectLock, Result,
-};
+use crate::{anyhow, bail, function::JsonMap, ipfs::StorageContent, novi::Novi, proto::ObjectLock, Result};
 
 pub async fn init(novi: &Novi) -> Result<()> {
     novi.register_function(
         "file.url".to_owned(),
         Arc::new(move |session, args: &JsonMap| {
             Box::pin(async move {
-                let depth_limit = args.get_u64("depth_limit").unwrap_or(5);
+                let depth_limit = args.get_u64_opt("depth_limit")?.unwrap_or(5);
                 let id = args.get_id("id")?;
-                let variant = args.get_str("variant").unwrap_or("original");
-                let allow_invalid = args.get_bool("allow_invalid").unwrap_or_default();
+                let variant = args.get_str_opt("variant")?.unwrap_or("original");
+                let allow_invalid = args.get_bool_opt("allow_invalid")?.unwrap_or_default();
+                let lock = args.get_lock_opt("lock")?.unwrap_or(ObjectLock::LockNone);
 
                 let to_result = |url: Option<String>| {
                     Ok([
@@ -26,7 +25,7 @@ pub async fn init(novi: &Novi) -> Result<()> {
                     .collect())
                 };
 
-                let object = session.get_object(id, ObjectLock::LockShare).await?;
+                let object = session.get_object(id, lock).await?;
                 let Ok(Some(url_str)) = object.get_file(variant) else {
                     if allow_invalid {
                         return to_result(None);
@@ -72,23 +71,23 @@ pub async fn init(novi: &Novi) -> Result<()> {
             Arc::new(move |_session, args: &JsonMap| {
                 let novi = novi.clone();
                 Box::pin(async move {
-                    let storage = args.get_str("storage").unwrap_or("default");
-                    let filename = args.get_str("filename").map(str::to_owned).ok();
+                    let storage = args.get_str_opt("storage")?.unwrap_or("default");
+                    let filename = args.get_str_opt("filename")?.map(str::to_owned);
 
                     let Some(client) = novi.config.ipfs_clients.get(storage) else {
                         bail!(@InvalidArgument "invalid storage")
                     };
 
-                    let content = if let Ok(url) = args.get_str("local") {
+                    let content = if let Some(url) = args.get_str_opt("local")? {
                         StorageContent::Local(url.to_owned())
-                    } else if let Ok(url) = args.get_str("url") {
+                    } else if let Some(url) = args.get_str_opt("url")? {
                         let resp = reqwest::get(url).await.and_then(|it| it.error_for_status());
                         let resp = match resp {
                             Ok(resp) => resp,
                             Err(err) => bail!(@IOError "failed to download file: {err:?}"),
                         };
                         StorageContent::Response(resp)
-                    } else if let Ok(path) = args.get_str("path") {
+                    } else if let Some(path) = args.get_str_opt("path")? {
                         StorageContent::File(PathBuf::from(path))
                     } else {
                         bail!(@InvalidArgument "missing URL or path")
@@ -119,13 +118,15 @@ pub async fn init(novi: &Novi) -> Result<()> {
         Arc::new(move |session, args: &JsonMap| {
             Box::pin(async move {
                 let id = args.get_id("id")?;
-                let variant = args.get_str("variant").unwrap_or("original");
+                let variant = args.get_str_opt("variant")?.unwrap_or("original");
+                let lock = args.get_lock_opt("lock")?.unwrap_or(ObjectLock::LockExclusive);
                 session
                     .identity
                     .check_perm(&format!("file.store:{variant}"))?;
 
-                let object = session.get_object(id, ObjectLock::LockShare).await?;
-                if object.get_file(variant).is_ok() && !args.get_bool("overwrite").unwrap_or(false)
+                let object = session.get_object(id, lock).await?;
+                if object.get_file(variant).is_ok()
+                    && !args.get_bool_opt("overwrite")?.unwrap_or_default()
                 {
                     bail!(@InvalidState "file already exists");
                 }

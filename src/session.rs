@@ -54,7 +54,7 @@ pub enum AccessKind {
 
 pub struct Session {
     pub(crate) novi: Novi,
-    token: SessionToken,
+    pub token: SessionToken,
 
     // This actually references `connection``, and should be dropped before it.
     // So this MUST be placed before `connection`.

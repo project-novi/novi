@@ -159,7 +159,13 @@ impl Session {
                     warn!("session closed unexpectedly");
                     return;
                 };
-                let Ok(_) = sender.send(SessionCommand::End { commit: false, notify: None }).await else {
+                let Ok(_) = sender
+                    .send(SessionCommand::End {
+                        commit: false,
+                        notify: None,
+                    })
+                    .await
+                else {
                     warn!("session closed unexpectedly");
                     return;
                 };
@@ -577,7 +583,7 @@ impl Session {
     ) -> Result<()> {
         self.identity.check_perm("subscribe")?;
 
-        info!("new subscriber");
+        info!(%filter, "new subscriber");
         let mut accept_kinds = 0u8;
         for kind in std::mem::take(&mut options.accept_kinds) {
             accept_kinds |= 1 << kind as u8;

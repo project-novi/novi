@@ -71,7 +71,7 @@ impl Inner {
                             let action = f(HookArgs {
                                 arguments: args,
                                 original_result: None,
-                                session: session,
+                                session,
                             })
                             .await?;
                             match action {
@@ -92,7 +92,7 @@ impl Inner {
                             let action = f(HookArgs {
                                 arguments: args,
                                 original_result: Some(&result),
-                                session: session,
+                                session,
                             })
                             .await?;
                             match action {

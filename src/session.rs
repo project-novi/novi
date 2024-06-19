@@ -96,7 +96,9 @@ impl Session {
         Ok(Self {
             novi,
             token: SessionToken::new(),
-            txn: unsafe { std::mem::transmute(txn) },
+            txn: unsafe {
+                std::mem::transmute::<Option<Transaction<'_>>, Option<Transaction<'static>>>(txn)
+            },
             identity,
             connection,
             mode,
@@ -113,7 +115,7 @@ impl Session {
 
     pub async fn end(self, commit: bool) -> Result<(), tokio_postgres::Error> {
         if let Some(txn) = self.txn {
-            let result = if commit {
+            if commit {
                 let novi = self.novi.clone();
                 let result = txn.commit().await;
                 if result.is_ok() {
@@ -126,8 +128,7 @@ impl Session {
                 result
             } else {
                 txn.rollback().await
-            };
-            result
+            }
         } else {
             Ok(())
         }

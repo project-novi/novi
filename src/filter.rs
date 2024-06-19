@@ -65,10 +65,10 @@ impl FilterKind {
         let val = match object.tags.get(tag) {
             Some(val) => val,
             None => {
-                return match self {
-                    FilterKind::Equals(_, false) | FilterKind::Contains(_, false) => true,
-                    _ => false,
-                }
+                return matches!(
+                    self,
+                    FilterKind::Equals(_, false) | FilterKind::Contains(_, false)
+                );
             }
         };
         match self {

@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Write};
+use std::fmt::Write;
 use tokio_postgres::types::{ToSql, Type};
 
 use crate::proto::ObjectLock;
@@ -41,7 +41,7 @@ impl QueryBuilder {
         self
     }
 
-    pub fn bind(&mut self, value: impl ToSql + Send + Sync + Debug + 'static, ty: Type) -> String {
+    pub fn bind(&mut self, value: impl ToSql + Send + Sync + 'static, ty: Type) -> String {
         // TODO: optimize
         self.args.push(Box::new(value));
         self.types.push(ty);

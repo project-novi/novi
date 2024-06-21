@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 use crate::{
     anyhow, bail,
     filter::{Filter, QueryOptions, TimeRange},
-    function::{parse_arguments, parse_json_map, JsonMap},
+    function::{parse_json_map, JsonMap},
     hook::{CoreHookArgs, HookAction, HookArgs, ObjectEdits},
     identity::IDENTITIES,
     misc::utc_from_timestamp,
@@ -730,7 +730,7 @@ impl proto::novi_server::Novi for RpcFacade {
             .submit(ext, move |session| {
                 Box::pin(async move {
                     let result = session
-                        .call_function(&req.name, &parse_arguments(req.arguments)?)
+                        .call_function(&req.name, &parse_json_map(req.arguments)?)
                         .await?;
                     Ok(proto::CallFunctionReply {
                         result: result.to_string(),

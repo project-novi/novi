@@ -98,16 +98,6 @@ pub type Function = Arc<
     dyn for<'a> Fn(&'a mut Session, &'a JsonMap) -> BoxFuture<'a, Result<JsonMap>> + Send + Sync,
 >;
 
-pub fn parse_arguments(json: String) -> Result<JsonMap> {
-    serde_json::Value::from_str(&json)
-        .ok()
-        .and_then(|it| match it {
-            serde_json::Value::Object(map) => Some(JsonMap::new(map)),
-            _ => None,
-        })
-        .ok_or_else(|| anyhow!(@InvalidArgument "invalid JSON object"))
-}
-
 pub fn parse_json_map(json: String) -> Result<JsonMap> {
     match serde_json::Value::from_str(&json) {
         Ok(serde_json::Value::Object(args)) => Ok(JsonMap::new(args)),

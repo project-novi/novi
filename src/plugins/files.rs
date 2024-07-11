@@ -1,69 +1,10 @@
-use std::{path::PathBuf, str::FromStr, sync::Arc};
-use url::Url;
-use uuid::Uuid;
+use std::{path::PathBuf, sync::Arc};
 
-use crate::{anyhow, bail, function::JsonMap, ipfs::StorageContent, novi::Novi, proto::ObjectLock, Result};
+use crate::{
+    anyhow, bail, function::JsonMap, ipfs::StorageContent, novi::Novi, proto::ObjectLock, Result,
+};
 
 pub async fn init(novi: &Novi) -> Result<()> {
-    novi.register_function(
-        "file.url".to_owned(),
-        Arc::new(move |session, args: &JsonMap| {
-            Box::pin(async move {
-                let depth_limit = args.get_u64_opt("depth_limit")?.unwrap_or(5);
-                let id = args.get_id("id")?;
-                let variant = args.get_str_opt("variant")?.unwrap_or("original");
-                let allow_invalid = args.get_bool_opt("allow_invalid")?.unwrap_or_default();
-                let lock = args.get_lock_opt("lock")?.unwrap_or(ObjectLock::LockNone);
-
-                let to_result = |url: Option<String>| {
-                    Ok([
-                        ("url".to_owned(), url.into()),
-                        ("id".to_owned(), id.to_string().into()),
-                        ("variant".to_owned(), variant.to_owned().into()),
-                    ]
-                    .into_iter()
-                    .collect())
-                };
-
-                let object = session.get_object(id, lock).await?;
-                let Ok(Some(url_str)) = object.get_file(variant) else {
-                    if allow_invalid {
-                        return to_result(None);
-                    }
-                    bail!(@FileNotFound "empty file field");
-                };
-                let Ok(url) = Url::parse(url_str) else {
-                    if allow_invalid {
-                        return to_result(Some(url_str.to_owned()));
-                    }
-                    bail!(@InvalidArgument "invalid URL")
-                };
-                if url.scheme() == "object" {
-                    if depth_limit == 0 {
-                        bail!(@FileNotFound "depth limit exceeded");
-                    }
-                    let Some(id) = url.host_str().and_then(|it| Uuid::from_str(it).ok()) else {
-                        bail!(@InvalidArgument "invalid object ID")
-                    };
-                    let variant = url.path().strip_prefix('/').unwrap_or("original");
-                    let args = [
-                        ("depth_limit".to_owned(), (depth_limit - 1).into()),
-                        ("id".to_owned(), id.to_string().into()),
-                        ("variant".to_owned(), variant.to_owned().into()),
-                        ("allow_invalid".to_owned(), allow_invalid.into()),
-                    ]
-                    .into_iter()
-                    .collect();
-                    session.call_function("file.url", &args).await
-                } else {
-                    to_result(Some(url_str.to_owned()))
-                }
-            })
-        }),
-        true,
-    )
-    .await?;
-
     novi.register_function(
         "file.put.impl".to_owned(),
         {
@@ -119,7 +60,9 @@ pub async fn init(novi: &Novi) -> Result<()> {
             Box::pin(async move {
                 let id = args.get_id("id")?;
                 let variant = args.get_str_opt("variant")?.unwrap_or("original");
-                let lock = args.get_lock_opt("lock")?.unwrap_or(ObjectLock::LockExclusive);
+                let lock = args
+                    .get_lock_opt("lock")?
+                    .unwrap_or(ObjectLock::LockExclusive);
                 session
                     .identity
                     .check_perm(&format!("file.store:{variant}"))?;
